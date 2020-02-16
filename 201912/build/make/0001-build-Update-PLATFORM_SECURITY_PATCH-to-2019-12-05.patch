@@ -1,0 +1,26 @@
+From 6bfe968801794f63965741db79e0fe085ad36926 Mon Sep 17 00:00:00 2001
+From: Stefan Berger <s.berger81@gmail.com>
+Date: Sat, 15 Feb 2020 21:13:53 +0100
+Subject: [PATCH] build: Update PLATFORM_SECURITY_PATCH to 2019-12-05
+
+Change-Id: Ieac1ed486d5b8fc4534058e2ab3a2cb175b83e56
+---
+ core/version_defaults.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/version_defaults.mk b/core/version_defaults.mk
+index bab2fe0..abf3b64 100644
+--- a/core/version_defaults.mk
++++ b/core/version_defaults.mk
+@@ -231,7 +231,7 @@ ifndef PLATFORM_SECURITY_PATCH
+     #  It must be of the form "YYYY-MM-DD" on production devices.
+     #  It must match one of the Android Security Patch Level strings of the Public Security Bulletins.
+     #  If there is no $PLATFORM_SECURITY_PATCH set, keep it empty.
+-      PLATFORM_SECURITY_PATCH := 2019-11-05
++      PLATFORM_SECURITY_PATCH := 2019-12-05
+ endif
+ 
+ ifndef PLATFORM_SECURITY_PATCH_TIMESTAMP
+-- 
+2.7.4
+

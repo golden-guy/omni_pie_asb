@@ -1,0 +1,371 @@
+From 101300ddaf9490b1879197e153dfb41d1cffa3a6 Mon Sep 17 00:00:00 2001
+From: Jean-Michel Trivi <jmtrivi@google.com>
+Date: Tue, 20 Aug 2019 15:42:04 -0700
+Subject: [PATCH] AudioFlinger: enforce OP_RECORD_AUDIO during recording
+
+  Fix issue where RecordTrack silencing didn't silence the
+full buffer: the memset to 0 was using the RecordThread frame
+size, not the RecordTrack frame size.
+  OP_RECORD_AUDIO was only enforced at the start of a recording
+which would fail if not granted. This patch silences the recording
+(i.e. silence is recorded instead) when it is lost, and undoes that
+when granted again. This requires:
+- propagating the package name of the client to the RecordTrack class
+- registering an appOp callback in RecordTrack (through a new
+  OpRecordAudioMonitor class) to (un)silence the recording
+- update the isSilenced() method to take into account the appOp.
+
+Bug: 138968594
+Bug: 138636979
+Test: run app that records audio, then "adb shell appops __pack_name__ 27 2"
+     and verify recording is silent after that.
+
+Change-Id: I4ebdb2f02409fdf045a77132bf7a1b24249ad948
+Merged-In: Ib33f5b592185a67204997213bab1ac2594d90d37
+(cherry picked from commit 43def76fcdb1d3a9b14a3f19a4c8a33534f8b003)
+---
+ services/audioflinger/AudioFlinger.cpp   |   3 +-
+ services/audioflinger/AudioFlinger.h     |   2 +
+ services/audioflinger/RecordTracks.h     |  41 +++++++++++-
+ services/audioflinger/ServiceUtilities.h |   9 +++
+ services/audioflinger/Threads.cpp        |   7 +-
+ services/audioflinger/Threads.h          |   3 +-
+ services/audioflinger/TrackBase.h        |   2 +
+ services/audioflinger/Tracks.cpp         | 107 ++++++++++++++++++++++++++++++-
+ 8 files changed, 166 insertions(+), 8 deletions(-)
+
+diff --git a/services/audioflinger/AudioFlinger.cpp b/services/audioflinger/AudioFlinger.cpp
+index c77d082..b884cf4 100644
+--- a/services/audioflinger/AudioFlinger.cpp
++++ b/services/audioflinger/AudioFlinger.cpp
+@@ -1723,7 +1723,8 @@ sp<media::IAudioRecord> AudioFlinger::createRecord(const CreateRecordInput& inpu
+                                                   &output.notificationFrameCount,
+                                                   clientUid, &output.flags,
+                                                   input.clientInfo.clientTid,
+-                                                  &lStatus, portId);
++                                                  &lStatus, portId,
++                                                  input.opPackageName);
+         LOG_ALWAYS_FATAL_IF((lStatus == NO_ERROR) && (recordTrack == 0));
+ 
+         // lStatus == BAD_TYPE means FAST flag was rejected: request a new input from
+diff --git a/services/audioflinger/AudioFlinger.h b/services/audioflinger/AudioFlinger.h
+index 963a87d..567c5a9 100644
+--- a/services/audioflinger/AudioFlinger.h
++++ b/services/audioflinger/AudioFlinger.h
+@@ -48,7 +48,9 @@
+ #include <utils/TypeHelpers.h>
+ #include <utils/Vector.h>
+ 
++#include <binder/AppOpsManager.h>
+ #include <binder/BinderService.h>
++#include <binder/IAppOpsCallback.h>
+ #include <binder/MemoryDealer.h>
+ 
+ #include <system/audio.h>
+diff --git a/services/audioflinger/RecordTracks.h b/services/audioflinger/RecordTracks.h
+index fc2dbbb..37b8f91 100644
+--- a/services/audioflinger/RecordTracks.h
++++ b/services/audioflinger/RecordTracks.h
+@@ -19,6 +19,39 @@
+     #error This header file should only be included from AudioFlinger.h
+ #endif
+ 
++// Checks and monitors OP_RECORD_AUDIO
++class OpRecordAudioMonitor : public RefBase {
++public:
++    ~OpRecordAudioMonitor() override;
++    bool hasOpRecordAudio() const;
++
++    static sp<OpRecordAudioMonitor> createIfNeeded(uid_t uid, const String16& opPackageName);
++
++private:
++    OpRecordAudioMonitor(uid_t uid, const String16& opPackageName);
++    void onFirstRef() override;
++
++    AppOpsManager mAppOpsManager;
++
++    class RecordAudioOpCallback : public BnAppOpsCallback {
++    public:
++        explicit RecordAudioOpCallback(const wp<OpRecordAudioMonitor>& monitor);
++        void opChanged(int32_t op, const String16& packageName) override;
++
++    private:
++        const wp<OpRecordAudioMonitor> mMonitor;
++    };
++
++    sp<RecordAudioOpCallback> mOpCallback;
++    // called by RecordAudioOpCallback when OP_RECORD_AUDIO is updated in AppOp callback
++    // and in onFirstRef()
++    void checkRecordAudio();
++
++    std::atomic_bool mHasOpRecordAudio;
++    const uid_t mUid;
++    const String16 mPackage;
++};
++
+ // record track
+ class RecordTrack : public TrackBase {
+ public:
+@@ -35,6 +68,7 @@ public:
+                                 uid_t uid,
+                                 audio_input_flags_t flags,
+                                 track_type type,
++                                const String16& opPackageName,
+                                 audio_port_handle_t portId = AUDIO_PORT_HANDLE_NONE);
+     virtual             ~RecordTrack();
+     virtual status_t    initCheck() const;
+@@ -65,7 +99,7 @@ public:
+     virtual bool        isFastTrack() const { return (mFlags & AUDIO_INPUT_FLAG_FAST) != 0; }
+ 
+             void        setSilenced(bool silenced) { if (!isPatchTrack()) mSilenced = silenced; }
+-            bool        isSilenced() const { return mSilenced; }
++            bool        isSilenced() const;
+ 
+             status_t    getActiveMicrophones(std::vector<media::MicrophoneInfo>* activeMicrophones);
+ 
+@@ -99,6 +133,11 @@ private:
+             audio_input_flags_t                mFlags;
+ 
+             bool                               mSilenced;
++
++            // used to enforce OP_RECORD_AUDIO
++            uid_t                              mUid;
++            String16                           mOpPackageName;
++            sp<OpRecordAudioMonitor>           mOpRecordAudioMonitor;
+ };
+ 
+ // playback track, used by PatchPanel
+diff --git a/services/audioflinger/ServiceUtilities.h b/services/audioflinger/ServiceUtilities.h
+index f45ada1..03756b3 100644
+--- a/services/audioflinger/ServiceUtilities.h
++++ b/services/audioflinger/ServiceUtilities.h
+@@ -14,12 +14,21 @@
+  * limitations under the License.
+  */
+ 
++#include <cutils/multiuser.h>
++#include <private/android_filesystem_config.h>
+ #include <unistd.h>
+ 
+ #include <binder/PermissionController.h>
+ 
+ namespace android {
+ 
++// Used for calls that should originate from system services.
++// We allow that some services might have separate processes to
++// handle multiple users, e.g. u10_system, u10_bluetooth, u10_radio.
++static inline bool isServiceUid(uid_t uid) {
++    return multiuser_get_app_id(uid) < AID_APP_START;
++}
++
+ extern pid_t getpid_cached;
+ bool isTrustedCallingUid(uid_t uid);
+ bool recordingAllowed(const String16& opPackageName, pid_t pid, uid_t uid);
+diff --git a/services/audioflinger/Threads.cpp b/services/audioflinger/Threads.cpp
+index 5869e57..3ca9f87 100644
+--- a/services/audioflinger/Threads.cpp
++++ b/services/audioflinger/Threads.cpp
+@@ -6807,7 +6807,7 @@ reacquire_wakelock:
+                         // Sanitize before releasing if the track has no access to the source data
+                         // An idle UID receives silence from non virtual devices until active
+                         if (activeTrack->isSilenced()) {
+-                            memset(activeTrack->mSink.raw, 0, framesOut * mFrameSize);
++                            memset(activeTrack->mSink.raw, 0, framesOut * activeTrack->frameSize());
+                         }
+                         activeTrack->releaseBuffer(&activeTrack->mSink);
+                     }
+@@ -6950,7 +6950,8 @@ sp<AudioFlinger::RecordThread::RecordTrack> AudioFlinger::RecordThread::createRe
+         audio_input_flags_t *flags,
+         pid_t tid,
+         status_t *status,
+-        audio_port_handle_t portId)
++        audio_port_handle_t portId,
++        const String16& opPackageName)
+ {
+     size_t frameCount = *pFrameCount;
+     size_t notificationFrameCount = *pNotificationFrameCount;
+@@ -7076,7 +7077,7 @@ sp<AudioFlinger::RecordThread::RecordTrack> AudioFlinger::RecordThread::createRe
+         track = new RecordTrack(this, client, attr, sampleRate,
+                       format, channelMask, frameCount,
+                       nullptr /* buffer */, (size_t)0 /* bufferSize */, sessionId, uid,
+-                      *flags, TrackBase::TYPE_DEFAULT, portId);
++                      *flags, TrackBase::TYPE_DEFAULT, opPackageName, portId);
+ 
+         lStatus = track->initCheck();
+         if (lStatus != NO_ERROR) {
+diff --git a/services/audioflinger/Threads.h b/services/audioflinger/Threads.h
+index d95cdef..bf5b3d7 100644
+--- a/services/audioflinger/Threads.h
++++ b/services/audioflinger/Threads.h
+@@ -1419,7 +1419,8 @@ public:
+                     audio_input_flags_t *flags,
+                     pid_t tid,
+                     status_t *status /*non-NULL*/,
+-                    audio_port_handle_t portId);
++                    audio_port_handle_t portId,
++                    const String16& opPackageName);
+ 
+             status_t    start(RecordTrack* recordTrack,
+                               AudioSystem::sync_event_t event,
+diff --git a/services/audioflinger/TrackBase.h b/services/audioflinger/TrackBase.h
+index ccfb69f..3b8369f 100644
+--- a/services/audioflinger/TrackBase.h
++++ b/services/audioflinger/TrackBase.h
+@@ -115,6 +115,8 @@ protected:
+ 
+     uint32_t channelCount() const { return mChannelCount; }
+ 
++    size_t frameSize() const { return mFrameSize; }
++
+     audio_channel_mask_t channelMask() const { return mChannelMask; }
+ 
+     virtual uint32_t sampleRate() const { return mSampleRate; }
+diff --git a/services/audioflinger/Tracks.cpp b/services/audioflinger/Tracks.cpp
+index a7c4253..de15e4b 100644
+--- a/services/audioflinger/Tracks.cpp
++++ b/services/audioflinger/Tracks.cpp
+@@ -1601,6 +1601,99 @@ void AudioFlinger::PlaybackThread::PatchTrack::restartIfDisabled()
+ //      Record
+ // ----------------------------------------------------------------------------
+ 
++// ----------------------------------------------------------------------------
++//      AppOp for audio recording
++// -------------------------------
++
++// static
++sp<AudioFlinger::RecordThread::OpRecordAudioMonitor>
++AudioFlinger::RecordThread::OpRecordAudioMonitor::createIfNeeded(
++            uid_t uid, const String16& opPackageName)
++{
++    if (isServiceUid(uid)) {
++        ALOGV("not silencing record for service uid:%d pack:%s",
++                uid, String8(opPackageName).string());
++        return nullptr;
++    }
++
++    if (opPackageName.size() == 0) {
++        Vector<String16> packages;
++        // no package name, happens with SL ES clients
++        // query package manager to find one
++        PermissionController permissionController;
++        permissionController.getPackagesForUid(uid, packages);
++        if (packages.isEmpty()) {
++            return nullptr;
++        } else {
++            ALOGV("using pack:%s for uid:%d", String8(packages[0]).string(), uid);
++            return new OpRecordAudioMonitor(uid, packages[0]);
++        }
++    }
++
++    return new OpRecordAudioMonitor(uid, opPackageName);
++}
++
++AudioFlinger::RecordThread::OpRecordAudioMonitor::OpRecordAudioMonitor(
++        uid_t uid, const String16& opPackageName)
++        : mHasOpRecordAudio(true), mUid(uid), mPackage(opPackageName)
++{
++}
++
++AudioFlinger::RecordThread::OpRecordAudioMonitor::~OpRecordAudioMonitor()
++{
++    if (mOpCallback != 0) {
++        mAppOpsManager.stopWatchingMode(mOpCallback);
++    }
++    mOpCallback.clear();
++}
++
++void AudioFlinger::RecordThread::OpRecordAudioMonitor::onFirstRef()
++{
++    checkRecordAudio();
++    mOpCallback = new RecordAudioOpCallback(this);
++    ALOGV("start watching OP_RECORD_AUDIO for pack:%s", String8(mPackage).string());
++    mAppOpsManager.startWatchingMode(AppOpsManager::OP_RECORD_AUDIO, mPackage, mOpCallback);
++}
++
++bool AudioFlinger::RecordThread::OpRecordAudioMonitor::hasOpRecordAudio() const {
++    return mHasOpRecordAudio.load();
++}
++
++// Called by RecordAudioOpCallback when OP_RECORD_AUDIO is updated in AppOp callback
++// and in onFirstRef()
++// Note this method is never called (and never to be) for audio server / patch record track
++// due to the UID in createIfNeeded(). As a result for those record track, it's:
++// - not called from constructor,
++// - not called from RecordAudioOpCallback because the callback is not installed in this case
++void AudioFlinger::RecordThread::OpRecordAudioMonitor::checkRecordAudio()
++{
++    const int32_t mode = mAppOpsManager.checkOp(AppOpsManager::OP_RECORD_AUDIO,
++            mUid, mPackage);
++    const bool hasIt =  (mode == AppOpsManager::MODE_ALLOWED);
++    // verbose logging only log when appOp changed
++    ALOGI_IF(hasIt != mHasOpRecordAudio.load(),
++            "OP_RECORD_AUDIO missing, %ssilencing record uid%d pack:%s",
++            hasIt ? "un" : "", mUid, String8(mPackage).string());
++    mHasOpRecordAudio.store(hasIt);
++}
++
++AudioFlinger::RecordThread::OpRecordAudioMonitor::RecordAudioOpCallback::RecordAudioOpCallback(
++        const wp<OpRecordAudioMonitor>& monitor) : mMonitor(monitor)
++{ }
++
++void AudioFlinger::RecordThread::OpRecordAudioMonitor::RecordAudioOpCallback::opChanged(int32_t op,
++            const String16& packageName) {
++    UNUSED(packageName);
++    if (op != AppOpsManager::OP_RECORD_AUDIO) {
++        return;
++    }
++    sp<OpRecordAudioMonitor> monitor = mMonitor.promote();
++    if (monitor != NULL) {
++        monitor->checkRecordAudio();
++    }
++}
++
++//----------------------------------------
+ AudioFlinger::RecordHandle::RecordHandle(
+         const sp<AudioFlinger::RecordThread::RecordTrack>& recordTrack)
+     : BnAudioRecord(),
+@@ -1654,6 +1747,7 @@ AudioFlinger::RecordThread::RecordTrack::RecordTrack(
+             uid_t uid,
+             audio_input_flags_t flags,
+             track_type type,
++            const String16& opPackageName,
+             audio_port_handle_t portId)
+     :   TrackBase(thread, client, attr, sampleRate, format,
+                   channelMask, frameCount, buffer, bufferSize, sessionId, uid, false /*isOut*/,
+@@ -1666,7 +1760,8 @@ AudioFlinger::RecordThread::RecordTrack::RecordTrack(
+         mResamplerBufferProvider(NULL), // initialize in case of early constructor exit
+         mRecordBufferConverter(NULL),
+         mFlags(flags),
+-        mSilenced(false)
++        mSilenced(false),
++        mOpRecordAudioMonitor(OpRecordAudioMonitor::createIfNeeded(uid, opPackageName))
+ {
+     if (mCblk == NULL) {
+         return;
+@@ -1852,6 +1947,14 @@ void AudioFlinger::RecordThread::RecordTrack::updateTrackFrameInfo(
+     mServerProxy->setTimestamp(local);
+ }
+ 
++bool AudioFlinger::RecordThread::RecordTrack::isSilenced() const {
++    if (mSilenced) {
++        return true;
++    }
++    // The monitor is only created for record tracks that can be silenced.
++    return mOpRecordAudioMonitor ? !mOpRecordAudioMonitor->hasOpRecordAudio() : false;
++}
++
+ status_t AudioFlinger::RecordThread::RecordTrack::getActiveMicrophones(
+         std::vector<media::MicrophoneInfo>* activeMicrophones)
+ {
+@@ -1875,7 +1978,7 @@ AudioFlinger::RecordThread::PatchRecord::PatchRecord(RecordThread *recordThread,
+     :   RecordTrack(recordThread, NULL,
+                 audio_attributes_t{} /* currently unused for patch track */,
+                 sampleRate, format, channelMask, frameCount,
+-                buffer, bufferSize, AUDIO_SESSION_NONE, getuid(), flags, TYPE_PATCH),
++                buffer, bufferSize, AUDIO_SESSION_NONE, getuid(), flags, TYPE_PATCH, String16()),
+                 mProxy(new ClientProxy(mCblk, mBuffer, frameCount, mFrameSize, false, true))
+ {
+     uint64_t mixBufferNs = ((uint64_t)2 * recordThread->frameCount() * 1000000000) /
+-- 
+2.7.4
+

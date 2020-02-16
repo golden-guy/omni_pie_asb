@@ -1,0 +1,112 @@
+From 131686328db2b9669a86c85ecdeb3cf6e92b3f84 Mon Sep 17 00:00:00 2001
+From: Abodunrinwa Toki <toki@google.com>
+Date: Fri, 2 Aug 2019 18:35:50 +0100
+Subject: [PATCH 5/6] RESTRICT AUTOMERGE Disable TextClassifier for
+ RemoteInputView.
+
+Sys UI runs in the primary user. This means that TextView components
+such as RemoteInputView and KeyguardPasswordView running in it could
+leak data across users.
+
+This CL disables the TextClassifier for RemoteInputView.
+It also logs when fixed issue is "potentially" exercised.
+There is no need to explicitly disable the TextClassifier for
+KeyguardPasswordView. It is a password field
+(TYPE_CLASS_TEXT | TYPE_TEXT_VARIATION_PASSWORD) and the
+TextClassifier does not run for such fields.
+
+Test: manually attempt to excercise the bug.
+      See the bug in 123232892 for more information.
+
+Bug: 136483597
+Bug: 123232892
+Change-Id: Ia1e4843d1505e204f2e78d2459da198c9988f7f2
+(cherry picked from commit 579abbd2d8ad37c4e07e1396002ad5be5bd41365)
+---
+ .../systemui/statusbar/policy/RemoteInputView.java | 25 ++++++++++++++++++++++
+ .../statusbar/policy/RemoteInputViewTest.java      | 10 +++++++++
+ 2 files changed, 35 insertions(+)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/policy/RemoteInputView.java b/packages/SystemUI/src/com/android/systemui/statusbar/policy/RemoteInputView.java
+index 80886f5..884e292 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/policy/RemoteInputView.java
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/policy/RemoteInputView.java
+@@ -33,6 +33,7 @@ import android.text.SpannedString;
+ import android.text.TextWatcher;
+ import android.util.AttributeSet;
+ import android.util.Log;
++import android.view.ActionMode;
+ import android.view.KeyEvent;
+ import android.view.LayoutInflater;
+ import android.view.MotionEvent;
+@@ -45,6 +46,7 @@ import android.view.inputmethod.CompletionInfo;
+ import android.view.inputmethod.EditorInfo;
+ import android.view.inputmethod.InputConnection;
+ import android.view.inputmethod.InputMethodManager;
++import android.view.textclassifier.TextClassifier;
+ import android.widget.EditText;
+ import android.widget.ImageButton;
+ import android.widget.LinearLayout;
+@@ -190,10 +192,33 @@ public class RemoteInputView extends LinearLayout implements View.OnClickListene
+         v.mEditText.setRestrictedAcrossUser(true);
+         v.setTag(VIEW_TAG);
+ 
++        // Disable the TextClassifier to avoid cross user interactions.
++        v.mEditText.setTextClassifier(TextClassifier.NO_OP);
++
+         return v;
+     }
+ 
+     @Override
++    public ActionMode startActionMode(ActionMode.Callback callback, int type) {
++        try {
++            UserHandle notificationUser = mEntry.notification.getUser();
++            UserHandle currentUser = UserHandle.of(ActivityManager.getCurrentUser());
++            if (!UserHandle.ALL.equals(notificationUser)
++                    && !currentUser.equals(notificationUser)) {
++                // If this happens to be a selection action mode, a non-NO_OP TextClassifier could
++                // leak data across users. This widget uses TextClassifier.NO_OP so this is fine.
++                // Log the security fix.
++                android.util.EventLog.writeEvent(0x534e4554, "123232892", -1, "");
++            }
++        } catch (Throwable t) {
++            // Avoid crashing because of this log attempt.
++            Log.i(TAG, "Error attempting to log security fix for bug 123232892", t);
++
++        }
++        return super.startActionMode(callback, type);
++    }
++
++    @Override
+     public void onClick(View v) {
+         if (v == mSendButton) {
+             sendRemoteInput();
+diff --git a/packages/SystemUI/tests/src/com/android/systemui/statusbar/policy/RemoteInputViewTest.java b/packages/SystemUI/tests/src/com/android/systemui/statusbar/policy/RemoteInputViewTest.java
+index a6fa4f5..aa98d4f 100644
+--- a/packages/SystemUI/tests/src/com/android/systemui/statusbar/policy/RemoteInputViewTest.java
++++ b/packages/SystemUI/tests/src/com/android/systemui/statusbar/policy/RemoteInputViewTest.java
+@@ -26,6 +26,7 @@ import android.support.test.filters.SmallTest;
+ import android.testing.AndroidTestingRunner;
+ import android.testing.TestableLooper;
+ import android.view.View;
++import android.view.textclassifier.TextClassifier;
+ import android.widget.EditText;
+ import android.widget.ImageButton;
+ 
+@@ -109,4 +110,13 @@ public class RemoteInputViewTest extends SysuiTestCase {
+         mView.setVisibility(View.INVISIBLE);
+         mView.setVisibility(View.VISIBLE);
+     }
++
++    @Test
++    public void testUsesNoOpTextClassifier() {
++        RemoteInput input = new RemoteInput.Builder(TEST_RESULT_KEY).build();
++        mView.setRemoteInput(new RemoteInput[]{input}, input);
++
++        EditText editText = mView.findViewById(R.id.remote_input_text);
++        assertEquals(TextClassifier.NO_OP, editText.getTextClassifier());
++    }
+ }
+-- 
+2.7.4
+

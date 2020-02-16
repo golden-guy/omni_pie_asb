@@ -1,0 +1,52 @@
+From ff58bfc922a438e2abc4f2563f8763026eaa4384 Mon Sep 17 00:00:00 2001
+From: shubang <shubang@google.com>
+Date: Mon, 22 Jul 2019 16:05:36 -0700
+Subject: [PATCH 2/3] Add SafetyNet logging to Tvprovider
+
+see
+go/safetynet-logging
+drive/open?id=1TQgBUkUUGYsiujLBn_4uzeUbwYdcguooHSwCzz0beTI
+
+Test: N/A
+Bug: 135269669
+Change-Id: I73a62fdd33782de87aaf46e5392d186db296f52c
+(cherry picked from commit 52ec984f862fcc76ee1a7590b753fb64390f5f3a)
+(cherry picked from commit 1479ef8f05778813250a79dc8616f5a5c8652735)
+(cherry picked from commit 128954a2836ca4decb962644909a403c54af6078)
+---
+ src/com/android/providers/tv/TvProvider.java | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/src/com/android/providers/tv/TvProvider.java b/src/com/android/providers/tv/TvProvider.java
+index 14d17f6..674bb88 100644
+--- a/src/com/android/providers/tv/TvProvider.java
++++ b/src/com/android/providers/tv/TvProvider.java
+@@ -1612,11 +1612,25 @@ public class TvProvider extends ContentProvider {
+                 // database.
+                 value = "NULL AS " + DatabaseUtils.sqlEscapeString(columnName);
+                 columnProjectionMap.put(columnName, value);
++
++                if (needEventLog(columnName)) {
++                    android.util.EventLog.writeEvent(0x534e4554, "135269669", -1, "");
++                }
+             }
+         }
+         return columnProjectionMap;
+     }
+ 
++    private boolean needEventLog(String columnName) {
++        for (int i = 0; i < columnName.length(); i++) {
++            char c = columnName.charAt(i);
++            if (!Character.isLetterOrDigit(c) && c != '_') {
++                return true;
++            }
++        }
++        return false;
++    }
++
+     private void filterContentValues(ContentValues values, Map<String, String> projectionMap) {
+         Iterator<String> iter = values.keySet().iterator();
+         while (iter.hasNext()) {
+-- 
+2.7.4
+

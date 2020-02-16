@@ -1,0 +1,43 @@
+From 5872c0c13136f942efa260e9c2d0e3545759da4f Mon Sep 17 00:00:00 2001
+From: Venkata Jagadeesh Garaga <vgaraga@codeaurora.org>
+Date: Thu, 18 Apr 2019 17:13:49 +0530
+Subject: [PATCH 1/3] GAP: Correct the continuous pkt length in l2cap
+
+L2cap continuous pkt length wrongly calculated in
+reassembly logic when remote sends more data
+than expected.
+
+Wrong pkt length leading to memory corruption
+
+Hence the Correct the continuous pkt length in
+l2cap reassembly logic.
+
+Bug: 135239489
+Bug: 143894715
+CRs-Fixed: 2434229
+Test: make and internal testing
+Change-Id: I758d9e31465b99e436b9b1841320000f08186c97
+Merged-In: I758d9e31465b99e436b9b1841320000f08186c97
+(cherry picked from commit 337bd4579453bd6bf98ff519de3ac1019cd30d28)
+(cherry picked from commit 602f4b44fe30ec8b225e1cee5f96817607d93e5a)
+---
+ hci/src/packet_fragmenter.cc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/hci/src/packet_fragmenter.cc b/hci/src/packet_fragmenter.cc
+index 921ac82..217b4fd 100644
+--- a/hci/src/packet_fragmenter.cc
++++ b/hci/src/packet_fragmenter.cc
+@@ -216,7 +216,8 @@ static void reassemble_and_dispatch(UNUSED_ATTR BT_HDR* packet) {
+                  "%s got packet which would exceed expected length of %d. "
+                  "Truncating.",
+                  __func__, partial_packet->len);
+-        packet->len = partial_packet->len - partial_packet->offset;
++        packet->len =
++            (partial_packet->len - partial_packet->offset) + packet->offset;
+         projected_offset = partial_packet->len;
+       }
+ 
+-- 
+2.7.4
+

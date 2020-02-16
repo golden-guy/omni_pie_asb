@@ -1,0 +1,255 @@
+From c5f204b16bdfb5e280688930fb789f0d99b601c4 Mon Sep 17 00:00:00 2001
+From: Lorenzo Colitti <lorenzo@google.com>
+Date: Fri, 10 May 2019 04:33:43 -0700
+Subject: [PATCH 4/6] Support strict mode private DNS on VPNs that provide
+ Internet.
+
+Currently, strict mode private DNS does not work on VPNs because
+NetworkMonitor does not validate VPNs. When a VPN connects, it
+immediately transitions to ValidatedState, skipping private DNS
+hostname resolution.
+
+This change makes NetworkMonitor perform private DNS hostname
+resolution and evaluation even on VPNs.
+
+In order to ensure that the system always immediately switches to
+the VPN as soon as it connects, remove the unvalidated penalty
+for VPN networks. This ensures that the VPN score is always 101
+and the VPN always outscores other networks as soon as it
+connects. Previously, it would only outscore other networks
+when no-op validation completed.
+
+Backport of 414b8c8b1ce8ae2ad6ef95c1ffba19062077d3e6.
+
+Bug: 122652057
+Test: atest FrameworksNetTests
+Test: manually ran a VPN with private DNS in strict mode
+Test: atest android.net.cts.ConnectivityManagerTest com.android.cts.net.HostsideVpnTests
+Change-Id: Iaa78a7edcf23755c89d7b354edbc28d37d74d891
+Merged-In: Iaa78a7edcf23755c89d7b354edbc28d37d74d891
+(cherry picked from commit 029d9ea11921b7ca5652d24a9563b66c2b70fafc)
+---
+ .../com/android/server/ConnectivityService.java    | 11 +++----
+ .../server/connectivity/ConnectivityConstants.java |  2 +-
+ .../server/connectivity/NetworkAgentInfo.java      |  4 +--
+ .../server/connectivity/NetworkMonitor.java        | 37 +++++++++++++++-------
+ .../android/server/ConnectivityServiceTest.java    | 28 +++++++++++++---
+ 5 files changed, 55 insertions(+), 27 deletions(-)
+
+diff --git a/services/core/java/com/android/server/ConnectivityService.java b/services/core/java/com/android/server/ConnectivityService.java
+index 482316b..204a51d 100644
+--- a/services/core/java/com/android/server/ConnectivityService.java
++++ b/services/core/java/com/android/server/ConnectivityService.java
+@@ -2355,9 +2355,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
+         }
+     }
+ 
+-    private boolean networkRequiresValidation(NetworkAgentInfo nai) {
+-        return NetworkMonitor.isValidationRequired(
+-                mDefaultRequest.networkCapabilities, nai.networkCapabilities);
++    private boolean networkRequiresPrivateDnsValidation(NetworkAgentInfo nai) {
++        return nai.networkMonitor.isPrivateDnsValidationRequired();
+     }
+ 
+     private void handleFreshlyValidatedNetwork(NetworkAgentInfo nai) {
+@@ -2375,16 +2374,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
+ 
+         for (NetworkAgentInfo nai : mNetworkAgentInfos.values()) {
+             handlePerNetworkPrivateDnsConfig(nai, cfg);
+-            if (networkRequiresValidation(nai)) {
++            if (networkRequiresPrivateDnsValidation(nai)) {
+                 handleUpdateLinkProperties(nai, new LinkProperties(nai.linkProperties));
+             }
+         }
+     }
+ 
+     private void handlePerNetworkPrivateDnsConfig(NetworkAgentInfo nai, PrivateDnsConfig cfg) {
+-        // Private DNS only ever applies to networks that might provide
+-        // Internet access and therefore also require validation.
+-        if (!networkRequiresValidation(nai)) return;
++        if (!networkRequiresPrivateDnsValidation(nai)) return;
+ 
+         // Notify the NetworkMonitor thread in case it needs to cancel or
+         // schedule DNS resolutions. If a DNS resolution is required the
+diff --git a/services/core/java/com/android/server/connectivity/ConnectivityConstants.java b/services/core/java/com/android/server/connectivity/ConnectivityConstants.java
+index 24865bc..cd7ef9e 100644
+--- a/services/core/java/com/android/server/connectivity/ConnectivityConstants.java
++++ b/services/core/java/com/android/server/connectivity/ConnectivityConstants.java
+@@ -45,7 +45,7 @@ public class ConnectivityConstants {
+     //
+     // This ensures that a) the explicitly selected network is never trumped by anything else, and
+     // b) the explicitly selected network is never torn down.
+-    public static final int MAXIMUM_NETWORK_SCORE = 100;
++    public static final int EXPLICITLY_SELECTED_NETWORK_SCORE = 100;
+     // VPNs typically have priority over other networks. Give them a score that will
+     // let them win every single time.
+     public static final int VPN_DEFAULT_SCORE = 101;
+diff --git a/services/core/java/com/android/server/connectivity/NetworkAgentInfo.java b/services/core/java/com/android/server/connectivity/NetworkAgentInfo.java
+index 505480e..5ee572e 100644
+--- a/services/core/java/com/android/server/connectivity/NetworkAgentInfo.java
++++ b/services/core/java/com/android/server/connectivity/NetworkAgentInfo.java
+@@ -432,11 +432,11 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo> {
+         // down an explicitly selected network before the user gets a chance to prefer it when
+         // a higher-scoring network (e.g., Ethernet) is available.
+         if (networkMisc.explicitlySelected && (networkMisc.acceptUnvalidated || pretendValidated)) {
+-            return ConnectivityConstants.MAXIMUM_NETWORK_SCORE;
++            return ConnectivityConstants.EXPLICITLY_SELECTED_NETWORK_SCORE;
+         }
+ 
+         int score = currentScore;
+-        if (!lastValidated && !pretendValidated && !ignoreWifiUnvalidationPenalty()) {
++        if (!lastValidated && !pretendValidated && !ignoreWifiUnvalidationPenalty() && !isVPN()) {
+             score -= ConnectivityConstants.UNVALIDATED_SCORE_PENALTY;
+         }
+         if (score < 0) score = 0;
+diff --git a/services/core/java/com/android/server/connectivity/NetworkMonitor.java b/services/core/java/com/android/server/connectivity/NetworkMonitor.java
+index d3dad1d..208fb10 100644
+--- a/services/core/java/com/android/server/connectivity/NetworkMonitor.java
++++ b/services/core/java/com/android/server/connectivity/NetworkMonitor.java
+@@ -243,12 +243,6 @@ public class NetworkMonitor extends StateMachine {
+ 
+     private String mPrivateDnsProviderHostname = "";
+ 
+-    public static boolean isValidationRequired(
+-            NetworkCapabilities dfltNetCap, NetworkCapabilities nc) {
+-        // TODO: Consider requiring validation for DUN networks.
+-        return dfltNetCap.satisfiedByNetworkCapabilities(nc);
+-    }
+-
+     private final Context mContext;
+     private final Handler mConnectivityServiceHandler;
+     private final NetworkAgentInfo mNetworkAgentInfo;
+@@ -381,11 +375,19 @@ public class NetworkMonitor extends StateMachine {
+         return 0 == mValidations ? ValidationStage.FIRST_VALIDATION : ValidationStage.REVALIDATION;
+     }
+ 
+-    private boolean isValidationRequired() {
+-        return isValidationRequired(
+-                mDefaultRequest.networkCapabilities, mNetworkAgentInfo.networkCapabilities);
++    @VisibleForTesting
++    public boolean isValidationRequired() {
++        // TODO: Consider requiring validation for DUN networks.
++        return mDefaultRequest.networkCapabilities.satisfiedByNetworkCapabilities(
++                mNetworkAgentInfo.networkCapabilities);
+     }
+ 
++    public boolean isPrivateDnsValidationRequired() {
++        // VPNs become the default network for applications even if they do not provide the INTERNET
++        // capability (e.g., split tunnels; See b/119216095).
++        // Ensure private DNS works on such VPNs as well.
++        return isValidationRequired() || mNetworkAgentInfo.isVPN();
++    }
+ 
+     private void notifyNetworkTestResultInvalid(Object obj) {
+         mConnectivityServiceHandler.sendMessage(obtainMessage(
+@@ -455,7 +457,7 @@ public class NetworkMonitor extends StateMachine {
+                     return HANDLED;
+                 case CMD_PRIVATE_DNS_SETTINGS_CHANGED: {
+                     final PrivateDnsConfig cfg = (PrivateDnsConfig) message.obj;
+-                    if (!isValidationRequired() || cfg == null || !cfg.inStrictMode()) {
++                    if (!isPrivateDnsValidationRequired() || cfg == null || !cfg.inStrictMode()) {
+                         // No DNS resolution required.
+                         //
+                         // We don't force any validation in opportunistic mode
+@@ -621,9 +623,20 @@ public class NetworkMonitor extends StateMachine {
+                     //    the network so don't bother validating here.  Furthermore sending HTTP
+                     //    packets over the network may be undesirable, for example an extremely
+                     //    expensive metered network, or unwanted leaking of the User Agent string.
++                    //
++                    // On networks that need to support private DNS in strict mode (e.g., VPNs, but
++                    // not networks that don't provide Internet access), we still need to perform
++                    // private DNS server resolution.
+                     if (!isValidationRequired()) {
+-                        validationLog("Network would not satisfy default request, not validating");
+-                        transitionTo(mValidatedState);
++                        if (isPrivateDnsValidationRequired()) {
++                            validationLog("Network would not satisfy default request, "
++                                    + "resolving private DNS");
++                            transitionTo(mEvaluatingPrivateDnsState);
++                        } else {
++                            validationLog("Network would not satisfy default request, "
++                                    + "not validating");
++                            transitionTo(mValidatedState);
++                        }
+                         return HANDLED;
+                     }
+                     mAttempts++;
+diff --git a/tests/net/java/com/android/server/ConnectivityServiceTest.java b/tests/net/java/com/android/server/ConnectivityServiceTest.java
+index d7a64dd..6ceed53f 100644
+--- a/tests/net/java/com/android/server/ConnectivityServiceTest.java
++++ b/tests/net/java/com/android/server/ConnectivityServiceTest.java
+@@ -26,6 +26,7 @@ import static android.net.ConnectivityManager.TYPE_MOBILE;
+ import static android.net.ConnectivityManager.TYPE_MOBILE_FOTA;
+ import static android.net.ConnectivityManager.TYPE_MOBILE_MMS;
+ import static android.net.ConnectivityManager.TYPE_NONE;
++import static android.net.ConnectivityManager.TYPE_VPN;
+ import static android.net.ConnectivityManager.TYPE_WIFI;
+ import static android.net.NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL;
+ import static android.net.NetworkCapabilities.NET_CAPABILITY_CBS;
+@@ -388,7 +389,7 @@ public class ConnectivityServiceTest {
+ 
+         MockNetworkAgent(int transport, LinkProperties linkProperties) {
+             final int type = transportToLegacyType(transport);
+-            final String typeName = ConnectivityManager.getNetworkTypeName(transport);
++            final String typeName = ConnectivityManager.getNetworkTypeName(type);
+             mNetworkInfo = new NetworkInfo(type, 0, typeName, "Mock");
+             mNetworkCapabilities = new NetworkCapabilities();
+             mNetworkCapabilities.addTransportType(transport);
+@@ -1111,6 +1112,8 @@ public class ConnectivityServiceTest {
+                 return TYPE_WIFI;
+             case TRANSPORT_CELLULAR:
+                 return TYPE_MOBILE;
++            case TRANSPORT_VPN:
++                return TYPE_VPN;
+             default:
+                 return TYPE_NONE;
+         }
+@@ -4468,7 +4471,7 @@ public class ConnectivityServiceTest {
+         callback.expectAvailableThenValidatedCallbacks(mEthernetNetworkAgent);
+         callback.assertNoCallback();
+ 
+-        // Bring up a VPN that has the INTERNET capability but does not provide Internet access.
++        // Bring up a VPN that has the INTERNET capability but does not validate.
+         final int uid = Process.myUid();
+         final MockNetworkAgent vpnNetworkAgent = new MockNetworkAgent(TRANSPORT_VPN);
+         vpnNetworkAgent.getWrappedNetworkMonitor().gen204ProbeResult = 500;
+@@ -4481,8 +4484,8 @@ public class ConnectivityServiceTest {
+         vpnNetworkAgent.connect(false /* validated */, true /* hasInternet */);
+         mMockVpn.connect();
+ 
+-        // The VPN validates and becomes the default network for our app.
+-        callback.expectAvailableCallbacksValidated(vpnNetworkAgent);
++        // Even though the VPN is unvalidated, it becomes the default network for our app.
++        callback.expectAvailableCallbacksUnvalidated(vpnNetworkAgent);
+         // TODO: this looks like a spurious callback.
+         callback.expectCallback(CallbackState.NETWORK_CAPABILITIES, vpnNetworkAgent);
+         callback.assertNoCallback();
+@@ -4492,9 +4495,24 @@ public class ConnectivityServiceTest {
+         assertEquals(vpnNetworkAgent.getNetwork(), mCm.getActiveNetwork());
+ 
+         NetworkCapabilities nc = mCm.getNetworkCapabilities(vpnNetworkAgent.getNetwork());
+-        assertTrue(nc.hasCapability(NET_CAPABILITY_VALIDATED));
++        assertFalse(nc.hasCapability(NET_CAPABILITY_VALIDATED));
+         assertTrue(nc.hasCapability(NET_CAPABILITY_INTERNET));
+ 
++        assertFalse(vpnNetworkAgent.getWrappedNetworkMonitor().isValidationRequired());
++        assertTrue(vpnNetworkAgent.getWrappedNetworkMonitor().isPrivateDnsValidationRequired());
++
++        // Pretend that the strict mode private DNS hostname now resolves. Even though the
++        // connectivity probe still returns 500, the network validates because the connectivity
++        // probe is not used on VPNs.
++        vpnNetworkAgent.getWrappedNetworkMonitor().dnsLookupResults =
++                new InetAddress[]{ InetAddress.getByName("2001:db8::1") };
++        mCm.reportNetworkConnectivity(vpnNetworkAgent.getNetwork(), true);
++
++        // Expect to see the validated capability, but no other changes, because the VPN is already
++        // the default network for the app.
++        callback.expectCapabilitiesWith(NET_CAPABILITY_VALIDATED, vpnNetworkAgent);
++        callback.assertNoCallback();
++
+         vpnNetworkAgent.disconnect();
+         callback.expectCallback(CallbackState.LOST, vpnNetworkAgent);
+         callback.expectAvailableCallbacksValidated(mEthernetNetworkAgent);
+-- 
+2.7.4
+

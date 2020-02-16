@@ -1,0 +1,32 @@
+From 14f9fa285099026947c8d54b5f64ffbabcf0d815 Mon Sep 17 00:00:00 2001
+From: Preetam Singh Ranawat <apranawat@codeaurora.org>
+Date: Mon, 24 Jun 2019 15:11:28 +0530
+Subject: [PATCH] audio: free and assign NULL to global static device pointer
+
+ -free and assign NULL to global static device pointer instead of local
+  pointer to avoid free after use issue.
+
+Change-Id: Idfdef719320efcd792c7d2ebd7ec2dfe5d3fbfbd
+---
+ hal/audio_hw.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/hal/audio_hw.c b/hal/audio_hw.c
+index 18ef89f..d6729bf 100644
+--- a/hal/audio_hw.c
++++ b/hal/audio_hw.c
+@@ -3873,9 +3873,9 @@ static int adev_dump(const audio_hw_device_t *device __unused,
+ 
+ static int adev_close(hw_device_t *device)
+ {
+-    struct audio_device *adev = (struct audio_device *)device;
++    struct audio_device *adev_temp = (struct audio_device *)device;
+ 
+-    if (!adev)
++    if (!adev_temp)
+         return 0;
+ 
+     pthread_mutex_lock(&adev_init_lock);
+-- 
+2.7.4
+

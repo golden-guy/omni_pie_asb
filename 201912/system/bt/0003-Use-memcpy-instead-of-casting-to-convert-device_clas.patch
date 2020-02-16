@@ -1,0 +1,125 @@
+From c866d7339fdd2a2d5335825651e74696da5d9c0a Mon Sep 17 00:00:00 2001
+From: Rahul Sabnis <rahulsabnis@google.com>
+Date: Thu, 29 Aug 2019 18:23:37 -0700
+Subject: [PATCH 3/5] Use memcpy instead of casting to convert device_class to
+ int
+
+Bug: 140152619
+Test: atest net_test_btcoreclear
+Change-Id: Iee71ce35576e438317841d41a81fda6a87e1984a
+Merged-In: Iee71ce35576e438317841d41a81fda6a87e1984a
+(cherry picked from commit ec75f1efb6b9be4933225a4b724e7a3ef5e3d70b)
+(cherry picked from commit 969ebed816c5d709128acadb1cbc8a04a6705d1e)
+---
+ btcore/src/device_class.cc       |  4 +++-
+ btcore/test/device_class_test.cc | 39 ++++++++++++++++++++++++---------------
+ 2 files changed, 27 insertions(+), 16 deletions(-)
+
+diff --git a/btcore/src/device_class.cc b/btcore/src/device_class.cc
+index 911eeee..1788024 100644
+--- a/btcore/src/device_class.cc
++++ b/btcore/src/device_class.cc
+@@ -88,7 +88,9 @@ void device_class_from_int(bt_device_class_t* dc, int data) {
+ int device_class_to_int(const bt_device_class_t* dc) {
+   CHECK(dc != NULL);
+   // Careful with endianess.
+-  return (int)(le32toh(*(int*)dc) & 0xffffff);
++  int val = 0;
++  memcpy(&val, dc, sizeof(*dc));
++  return static_cast<int>(le32toh(val) & 0xffffff);
+ }
+ 
+ bool device_class_equals(const bt_device_class_t* p1,
+diff --git a/btcore/test/device_class_test.cc b/btcore/test/device_class_test.cc
+index 5ce1523..cc1a1fe 100644
+--- a/btcore/test/device_class_test.cc
++++ b/btcore/test/device_class_test.cc
+@@ -22,9 +22,6 @@
+ 
+ #include "btcore/include/device_class.h"
+ 
+-// Device Class is 3 bytes.
+-static const int DC_MASK = 0xffffff;
+-
+ ::testing::AssertionResult check_bitfield(const char* m_expr,
+                                           const char* n_expr, int m, int n) {
+   if (m == n) return ::testing::AssertionSuccess();
+@@ -84,8 +81,9 @@ TEST_F(DeviceClassTest, to_stream) {
+     int rc = device_class_to_stream(&dc, dc_stream1, sizeof(dc_stream1));
+     EXPECT_EQ(3, rc);
+ 
+-    uint32_t* val = (uint32_t*)&dc;
+-    EXPECT_PRED_FORMAT2(check_bitfield, 0x00000000, *val & 0xffffff);
++    uint32_t val = 0;
++    memcpy(&val, &dc, sizeof(dc));
++    EXPECT_PRED_FORMAT2(check_bitfield, 0x00000000, val);
+ 
+     EXPECT_PRED_FORMAT2(check_bitfield, 0x00, dc_stream1[0]);
+     EXPECT_PRED_FORMAT2(check_bitfield, 0x00, dc_stream1[1]);
+@@ -101,8 +99,9 @@ TEST_F(DeviceClassTest, to_stream) {
+ 
+     int rc = device_class_to_stream(&dc, dc_stream1, sizeof(dc_stream1));
+     EXPECT_EQ(3, rc);
+-    uint32_t* val = (uint32_t*)&dc;
+-    EXPECT_PRED_FORMAT2(check_bitfield, 0x00aa55aa, *val & 0xffffff);
++    uint32_t val = 0;
++    memcpy(&val, &dc, sizeof(dc));
++    EXPECT_PRED_FORMAT2(check_bitfield, 0x00aa55aa, val);
+ 
+     EXPECT_PRED_FORMAT2(check_bitfield, 0xaa, dc_stream1[0]);
+     EXPECT_PRED_FORMAT2(check_bitfield, 0x55, dc_stream1[1]);
+@@ -118,8 +117,9 @@ TEST_F(DeviceClassTest, to_stream) {
+ 
+     int rc = device_class_to_stream(&dc, dc_stream1, sizeof(dc_stream1));
+     EXPECT_EQ(3, rc);
+-    uint32_t* val = (uint32_t*)&dc;
+-    EXPECT_PRED_FORMAT2(check_bitfield, 0x452301, *val & 0xffffff);
++    uint32_t val = 0;
++    memcpy(&val, &dc, sizeof(dc));
++    EXPECT_PRED_FORMAT2(check_bitfield, 0x452301, val);
+ 
+     EXPECT_PRED_FORMAT2(check_bitfield, 0x01, dc_stream1[0]);
+     EXPECT_PRED_FORMAT2(check_bitfield, 0x23, dc_stream1[1]);
+@@ -131,24 +131,33 @@ TEST_F(DeviceClassTest, limited_discoverable_mode) {
+   uint8_t dc_stream[] = {0x00, 0x00, 0x00};
+   bt_device_class_t dc;
+   device_class_from_stream(&dc, dc_stream);
+-  uint32_t* test = (uint32_t*)&dc;
++  uint32_t test = 0;
++  memcpy(&test, &dc, sizeof(dc));
+ 
+   EXPECT_FALSE(device_class_get_limited(&dc));
+-  EXPECT_EQ((unsigned)0x00000000, *test & DC_MASK);
++  EXPECT_EQ((unsigned)0x00000000, test);
+ 
+   device_class_set_limited(&dc, true);
++  test = 0;
++  memcpy(&test, &dc, sizeof(dc));
+   EXPECT_TRUE(device_class_get_limited(&dc));
+-  EXPECT_EQ((unsigned)0x00002000, *test & DC_MASK);
++  EXPECT_EQ((unsigned)0x00002000, test);
+ 
+   device_class_set_limited(&dc, false);
++  test = 0;
++  memcpy(&test, &dc, sizeof(dc));
+   EXPECT_FALSE(device_class_get_limited(&dc));
+-  EXPECT_EQ((unsigned)0x00000000, *test & DC_MASK);
++  EXPECT_EQ((unsigned)0x00000000, test);
+ 
+   device_class_set_limited(&dc, true);
+-  EXPECT_PRED_FORMAT2(check_bitfield, 0x00002000, *test & DC_MASK);
++  test = 0;
++  memcpy(&test, &dc, sizeof(dc));
++  EXPECT_PRED_FORMAT2(check_bitfield, 0x00002000, test);
+ 
+   device_class_set_limited(&dc, false);
+-  EXPECT_PRED_FORMAT2(check_bitfield, 0x00000000, *test & DC_MASK);
++  test = 0;
++  memcpy(&test, &dc, sizeof(dc));
++  EXPECT_PRED_FORMAT2(check_bitfield, 0x00000000, test);
+ }
+ 
+ TEST_F(DeviceClassTest, equals) {
+-- 
+2.7.4
+

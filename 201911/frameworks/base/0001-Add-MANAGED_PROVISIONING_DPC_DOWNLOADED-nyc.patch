@@ -1,0 +1,40 @@
+From 20da0972a5e9b2916a265014e98abb326c84ad5d Mon Sep 17 00:00:00 2001
+From: Jonathan Scott <scottjonathan@google.com>
+Date: Tue, 25 Jun 2019 10:58:06 +0100
+Subject: [PATCH 1/5] Add MANAGED_PROVISIONING_DPC_DOWNLOADED (nyc).
+
+Test: Just adding a constant
+Bug: 132261064
+Change-Id: I1527be03a10fa1a2fde09e3e41d6b7e83a986fc0
+Merged-In: I2bce277ff8f2de4614e19d5385fe6712b076f9c9
+(cherry picked from commit 20e5d92613268c196b508865b7275b59f00688f5)
+---
+ core/java/android/provider/Settings.java | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/core/java/android/provider/Settings.java b/core/java/android/provider/Settings.java
+index d3cfa7c..259bf42 100644
+--- a/core/java/android/provider/Settings.java
++++ b/core/java/android/provider/Settings.java
+@@ -6526,6 +6526,18 @@ public final class Settings {
+         public static final String DEVICE_PROVISIONED = Global.DEVICE_PROVISIONED;
+ 
+         /**
++         * Indicates whether a DPC has been downloaded during provisioning.
++         *
++         * <p>Type: int (0 for false, 1 for true)
++         *
++         * <p>If this is true, then any attempts to begin setup again should result in factory reset
++         *
++         * @hide
++         */
++        public static final String MANAGED_PROVISIONING_DPC_DOWNLOADED =
++                "managed_provisioning_dpc_downloaded";
++
++        /**
+          * Whether the current user has been set up via setup wizard (0 = false, 1 = true)
+          * @hide
+          */
+-- 
+2.7.4
+

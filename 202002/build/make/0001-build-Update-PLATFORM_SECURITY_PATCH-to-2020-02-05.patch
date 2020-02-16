@@ -1,0 +1,26 @@
+From 1ff34e1ce6b61d5b6b17ddfb6563c66e8978df66 Mon Sep 17 00:00:00 2001
+From: Stefan Berger <s.berger81@gmail.com>
+Date: Sat, 15 Feb 2020 21:56:51 +0100
+Subject: [PATCH] build: Update PLATFORM_SECURITY_PATCH to 2020-02-05
+
+Change-Id: I69c774a65bc0d578d8dfb5c46ac0ff1e74f42af8
+---
+ core/version_defaults.mk | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/core/version_defaults.mk b/core/version_defaults.mk
+index 618584d..13b5bec 100644
+--- a/core/version_defaults.mk
++++ b/core/version_defaults.mk
+@@ -231,7 +231,7 @@ ifndef PLATFORM_SECURITY_PATCH
+     #  It must be of the form "YYYY-MM-DD" on production devices.
+     #  It must match one of the Android Security Patch Level strings of the Public Security Bulletins.
+     #  If there is no $PLATFORM_SECURITY_PATCH set, keep it empty.
+-      PLATFORM_SECURITY_PATCH := 2020-01-05
++      PLATFORM_SECURITY_PATCH := 2020-02-05
+ endif
+ 
+ ifndef PLATFORM_SECURITY_PATCH_TIMESTAMP
+-- 
+2.7.4
+

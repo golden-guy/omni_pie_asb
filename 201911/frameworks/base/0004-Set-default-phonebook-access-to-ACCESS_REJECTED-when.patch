@@ -1,0 +1,47 @@
+From 827d9ea6fefc819346438585c7f1e9c6c42fb9cf Mon Sep 17 00:00:00 2001
+From: Zongheng Wang <wangzongheng@google.com>
+Date: Thu, 5 Sep 2019 13:44:28 -0700
+Subject: [PATCH 4/5] Set default phonebook access to ACCESS_REJECTED when user
+ didn't choose one
+
+When there's no users' choice to tell us whether to share their
+phonebook information to the Bluetooth device, set the phonebook access
+permission to ACCESS_REJECTED.
+
+Bug: 138529441
+Test: Manual test
+Change-Id: Iefabeb731b941f09fe1272ac7b7cd2feba75c8df
+Merged-In: Iefabeb731b941f09fe1272ac7b7cd2feba75c8df
+(cherry picked from commit 9b3cb0f06b7c4907c293aa65e68c7ed6e4962d4b)
+---
+ .../com/android/settingslib/bluetooth/CachedBluetoothDevice.java    | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/packages/SettingsLib/src/com/android/settingslib/bluetooth/CachedBluetoothDevice.java b/packages/SettingsLib/src/com/android/settingslib/bluetooth/CachedBluetoothDevice.java
+index 1a8e24f..e4e4f63 100644
+--- a/packages/SettingsLib/src/com/android/settingslib/bluetooth/CachedBluetoothDevice.java
++++ b/packages/SettingsLib/src/com/android/settingslib/bluetooth/CachedBluetoothDevice.java
+@@ -27,6 +27,7 @@ import android.media.AudioManager;
+ import android.os.ParcelUuid;
+ import android.os.SystemClock;
+ import android.text.TextUtils;
++import android.util.EventLog;
+ import android.util.Log;
+ import android.bluetooth.BluetoothAdapter;
+ import android.support.annotation.VisibleForTesting;
+@@ -963,10 +964,9 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice>
+                         == BluetoothClass.Device.AUDIO_VIDEO_HANDSFREE ||
+                     mDevice.getBluetoothClass().getDeviceClass()
+                         == BluetoothClass.Device.AUDIO_VIDEO_WEARABLE_HEADSET) {
+-                    setPhonebookPermissionChoice(CachedBluetoothDevice.ACCESS_ALLOWED);
+-                } else {
+-                    setPhonebookPermissionChoice(CachedBluetoothDevice.ACCESS_REJECTED);
++                    EventLog.writeEvent(0x534e4554, "138529441", -1, "");
+                 }
++                setPhonebookPermissionChoice(CachedBluetoothDevice.ACCESS_REJECTED);
+             }
+         }
+     }
+-- 
+2.7.4
+

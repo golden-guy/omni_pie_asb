@@ -1,0 +1,33 @@
+From f9d5f50ea24fc6c01896bdeea444ddc53c2ddaae Mon Sep 17 00:00:00 2001
+From: Steven Moreland <smoreland@google.com>
+Date: Mon, 7 Oct 2019 17:30:23 -0700
+Subject: [PATCH] Sensor: use FlattenableUtils::align
+
+Since it memsets skipped over memory now.
+
+Bug: 141890807
+Test: boot, check buffer is zero'd here
+Change-Id: Ieb3cd90215a3ccc1dc43365ecde251a50db08553
+(cherry picked from commit d58cf5acb863eddbbeb9982439965e259045940e)
+(cherry picked from commit dbd0eecfc7570231d5cbb76678b0358c43ee6d3c)
+---
+ libs/sensor/Sensor.cpp | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/libs/sensor/Sensor.cpp b/libs/sensor/Sensor.cpp
+index a0e368c..2383516 100644
+--- a/libs/sensor/Sensor.cpp
++++ b/libs/sensor/Sensor.cpp
+@@ -562,7 +562,8 @@ void Sensor::flattenString8(void*& buffer, size_t& size,
+     uint32_t len = static_cast<uint32_t>(string8.length());
+     FlattenableUtils::write(buffer, size, len);
+     memcpy(static_cast<char*>(buffer), string8.string(), len);
+-    FlattenableUtils::advance(buffer, size, FlattenableUtils::align<4>(len));
++    FlattenableUtils::advance(buffer, size, len);
++    size -= FlattenableUtils::align<4>(buffer);
+ }
+ 
+ bool Sensor::unflattenString8(void const*& buffer, size_t& size, String8& outputString8) {
+-- 
+2.7.4
+

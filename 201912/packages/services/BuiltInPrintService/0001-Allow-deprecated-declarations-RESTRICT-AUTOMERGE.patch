@@ -1,0 +1,38 @@
+From 50300343ff6a7ad3bf8a55b555d4c826d3c44bb3 Mon Sep 17 00:00:00 2001
+From: Bryan Ferris <bferris@google.com>
+Date: Mon, 1 Jul 2019 15:08:59 -0700
+Subject: [PATCH] Allow deprecated declarations RESTRICT AUTOMERGE
+
+In order to address the security vulnerability at b/111210196 we are
+upgrading the libcups library. There are some calls to functions that
+are deprecated between the versions; in order to minimize churn in
+legacy branches we are allowing deprecated functions to be called rather
+than modifying the code to use the new functions.
+
+Bug: 111210196
+Test: adb shell am instrument -w android.print.cts/android.support.test.runner.AndroidJUnitRunner
+
+Change-Id: I2b7d568c9f8878d27d9e53f96930d62d07b7d84a
+(cherry picked from commit ba340b93c2de12f2ae71fb051cd04ef42e287d06)
+---
+ jni/Android.mk | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/jni/Android.mk b/jni/Android.mk
+index d57c115..5dbe400 100644
+--- a/jni/Android.mk
++++ b/jni/Android.mk
+@@ -26,7 +26,9 @@ LOCAL_SDK_VERSION := current
+ LOCAL_CFLAGS += \
+       -DINCLUDE_PDF=1 -Werror -Wextra -Wno-unused-parameter \
+       -Wno-sign-compare -Wno-missing-field-initializers \
+-      -Wno-implicit-function-declaration -Wno-format -Wno-missing-braces
++      -Wno-implicit-function-declaration -Wno-format -Wno-missing-braces \
++      -Wno-deprecated-declarations
++
+ 
+ PLUGINS_SRCS := \
+       $(PLUGINS_DIR)/lib_pclm.c $(PLUGINS_DIR)/lib_pwg.c \
+-- 
+2.7.4
+

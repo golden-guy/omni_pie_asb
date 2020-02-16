@@ -1,0 +1,260 @@
+From 4725545b018a5b26ab41f860d06c34fb07c307fb Mon Sep 17 00:00:00 2001
+From: Lorenzo Colitti <lorenzo@google.com>
+Date: Sat, 26 Oct 2019 01:20:57 +0900
+Subject: [PATCH 3/6] Add test coverage for strict mode private DNS.
+
+Support faking out the DNS lookups used by NetworkMonitor to
+resolve strict mode DNS, and add more test coverage.
+
+These tests were partly adapted from tests we have in Q but
+also contain new coverage. This is because in Q the interface
+between ConnectivityService and NetworkMonitor changed
+substantially, and it is impractical to backport
+NetworkMonitorTest.
+
+Bug: 122652057
+Test: atest FrameworksNetTests
+Change-Id: I6497b7efa539267576d38d3036eef0af0df4e9cb
+Merged-In: Iaa78a7edcf23755c89d7b354edbc28d37d74d891
+(cherry picked from commit 60cd85533d3a9ad4e3758de4804d1716e7fe0371)
+---
+ .../server/connectivity/NetworkMonitor.java        |  18 +++-
+ .../android/server/ConnectivityServiceTest.java    | 117 +++++++++++++++++++--
+ 2 files changed, 126 insertions(+), 9 deletions(-)
+
+diff --git a/services/core/java/com/android/server/connectivity/NetworkMonitor.java b/services/core/java/com/android/server/connectivity/NetworkMonitor.java
+index 9b9a380..d3dad1d 100644
+--- a/services/core/java/com/android/server/connectivity/NetworkMonitor.java
++++ b/services/core/java/com/android/server/connectivity/NetworkMonitor.java
+@@ -796,7 +796,7 @@ public class NetworkMonitor extends StateMachine {
+             try {
+                 // Do a blocking DNS resolution using the network-assigned nameservers.
+                 // Do not set AI_ADDRCONFIG in ai_flags so we get all address families in advance.
+-                final InetAddress[] ips = ResolvUtil.blockingResolveAllLocally(
++                final InetAddress[] ips = resolveAllLocally(
+                         mNetwork, mPrivateDnsProviderHostname, 0 /* aiFlags */);
+                 mPrivateDnsConfig = new PrivateDnsConfig(mPrivateDnsProviderHostname, ips);
+             } catch (UnknownHostException uhe) {
+@@ -830,7 +830,7 @@ public class NetworkMonitor extends StateMachine {
+             final String host = UUID.randomUUID().toString().substring(0, 8) +
+                     ONE_TIME_HOSTNAME_SUFFIX;
+             try {
+-                final InetAddress[] ips = mNetworkAgentInfo.network().getAllByName(host);
++                final InetAddress[] ips = getAllByName(mNetworkAgentInfo.network(), host);
+                 return (ips != null && ips.length > 0);
+             } catch (UnknownHostException uhe) {}
+             return false;
+@@ -1046,7 +1046,7 @@ public class NetworkMonitor extends StateMachine {
+         int result;
+         String connectInfo;
+         try {
+-            InetAddress[] addresses = mNetwork.getAllByName(host);
++            InetAddress[] addresses = getAllByName(mNetwork, host);
+             StringBuffer buffer = new StringBuffer();
+             for (InetAddress address : addresses) {
+                 buffer.append(',').append(address.getHostAddress());
+@@ -1233,6 +1233,18 @@ public class NetworkMonitor extends StateMachine {
+         }
+     }
+ 
++    @VisibleForTesting
++    protected InetAddress[] getAllByName(Network network, String host) throws UnknownHostException {
++        return network.getAllByName(host);
++    }
++
++    @VisibleForTesting
++    protected InetAddress[] resolveAllLocally(Network network, String hostname, int flags)
++            throws UnknownHostException {
++        // We cannot use this in OneAddressPerFamilyNetwork#getAllByName because that's static.
++        return ResolvUtil.blockingResolveAllLocally(network, hostname, flags);
++    }
++
+     private URL makeURL(String url) {
+         if (url != null) {
+             try {
+diff --git a/tests/net/java/com/android/server/ConnectivityServiceTest.java b/tests/net/java/com/android/server/ConnectivityServiceTest.java
+index e6a889b..d7a64dd 100644
+--- a/tests/net/java/com/android/server/ConnectivityServiceTest.java
++++ b/tests/net/java/com/android/server/ConnectivityServiceTest.java
+@@ -165,6 +165,7 @@ import org.mockito.MockitoAnnotations;
+ import org.mockito.Spy;
+ 
+ import java.net.InetAddress;
++import java.net.UnknownHostException;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+@@ -455,6 +456,10 @@ public class ConnectivityServiceTest {
+             mNetworkAgent.sendNetworkScore(mScore);
+         }
+ 
++        public int getScore() {
++            return mScore;
++        }
++
+         public void explicitlySelected(boolean acceptUnvalidated) {
+             mNetworkAgent.explicitlySelected(acceptUnvalidated);
+         }
+@@ -869,6 +874,7 @@ public class ConnectivityServiceTest {
+         // HTTP response code fed back to NetworkMonitor for Internet connectivity probe.
+         public int gen204ProbeResult = 500;
+         public String gen204ProbeRedirectUrl = null;
++        public volatile InetAddress[] dnsLookupResults = null;
+ 
+         public WrappedNetworkMonitor(Context context, Handler handler,
+                 NetworkAgentInfo networkAgentInfo, NetworkRequest defaultRequest,
+@@ -883,6 +889,25 @@ public class ConnectivityServiceTest {
+             if (!mIsCaptivePortalCheckEnabled) { return new CaptivePortalProbeResult(204); }
+             return new CaptivePortalProbeResult(gen204ProbeResult, gen204ProbeRedirectUrl, null);
+         }
++
++        private InetAddress[] fakeDnsLookup() throws UnknownHostException {
++            if (dnsLookupResults == null) {
++                throw new UnknownHostException();
++            }
++            return dnsLookupResults;
++        }
++
++        @Override
++        protected InetAddress[] getAllByName(Network network, String hostname)
++                throws UnknownHostException {
++            return fakeDnsLookup();
++        }
++
++        @Override
++        protected InetAddress[] resolveAllLocally(Network network, String hostname, int flags)
++                throws UnknownHostException {
++            return fakeDnsLookup();
++        }
+     }
+ 
+     private class WrappedMultinetworkPolicyTracker extends MultinetworkPolicyTracker {
+@@ -4021,7 +4046,7 @@ public class ConnectivityServiceTest {
+         cellLp.addDnsServer(InetAddress.getByName("192.0.2.1"));
+ 
+         mCellNetworkAgent.sendLinkProperties(cellLp);
+-        mCellNetworkAgent.connect(false);
++        mCellNetworkAgent.connect(true);
+         waitForIdle();
+         verify(mNetworkManagementService, atLeastOnce()).setDnsConfigurationForNetwork(
+                 anyInt(), mStringArrayCaptor.capture(), any(), any(),
+@@ -4039,9 +4064,10 @@ public class ConnectivityServiceTest {
+                 mCellNetworkAgent);
+         CallbackInfo cbi = cellNetworkCallback.expectCallback(
+                 CallbackState.LINK_PROPERTIES, mCellNetworkAgent);
+-        cellNetworkCallback.assertNoCallback();
+         assertFalse(((LinkProperties)cbi.arg).isPrivateDnsActive());
+         assertNull(((LinkProperties)cbi.arg).getPrivateDnsServerName());
++        cellNetworkCallback.expectCallback(CallbackState.NETWORK_CAPABILITIES, mCellNetworkAgent);
++        cellNetworkCallback.assertNoCallback();
+ 
+         setPrivateDnsSettings(PRIVATE_DNS_MODE_OFF, "ignored.example.com");
+         verify(mNetworkManagementService, times(1)).setDnsConfigurationForNetwork(
+@@ -4066,14 +4092,45 @@ public class ConnectivityServiceTest {
+         reset(mNetworkManagementService);
+         cellNetworkCallback.assertNoCallback();
+ 
++        // Strict mode.
++        mCellNetworkAgent.getWrappedNetworkMonitor().dnsLookupResults = new InetAddress[] {
++                InetAddress.getByName("2001:db8::66"),
++                InetAddress.getByName("192.0.2.44")
++        };
+         setPrivateDnsSettings(PRIVATE_DNS_MODE_PROVIDER_HOSTNAME, "strict.example.com");
+-        // Can't test dns configuration for strict mode without properly mocking
+-        // out the DNS lookups, but can test that LinkProperties is updated.
++
++        // Expect a callback saying that private DNS is now in strict mode.
+         cbi = cellNetworkCallback.expectCallback(CallbackState.LINK_PROPERTIES,
+                 mCellNetworkAgent);
++        LinkProperties lp = (LinkProperties) cbi.arg;
++        assertTrue(lp.isPrivateDnsActive());
++        assertEquals("strict.example.com", lp.getPrivateDnsServerName());
+         cellNetworkCallback.assertNoCallback();
+-        assertTrue(((LinkProperties)cbi.arg).isPrivateDnsActive());
+-        assertEquals("strict.example.com", ((LinkProperties)cbi.arg).getPrivateDnsServerName());
++
++        // When the validation callback arrives, LinkProperties are updated.
++        // We need to wait for this callback because the test thread races with the NetworkMonitor
++        // thread, and if the test thread wins the race, then the times(2) verify call below will
++        // fail.
++        mService.mNetdEventCallback.onPrivateDnsValidationEvent(
++                mCellNetworkAgent.getNetwork().netId, "2001:db8::66", "strict.example.com", true);
++        cbi = cellNetworkCallback.expectCallback(CallbackState.LINK_PROPERTIES,
++                mCellNetworkAgent);
++        lp = (LinkProperties) cbi.arg;
++        assertTrue(lp.isPrivateDnsActive());
++        assertEquals(1, lp.getValidatedPrivateDnsServers().size());
++
++        // setDnsConfigurationForNetwork is called twice: once when private DNS is set to strict
++        // mode and once when the hostname resolves.
++        verify(mNetworkManagementService, times(2)).setDnsConfigurationForNetwork(
++                anyInt(), mStringArrayCaptor.capture(), any(), any(),
++                eq("strict.example.com"), tlsServers.capture());
++        assertEquals(2, mStringArrayCaptor.getValue().length);
++        assertTrue(ArrayUtils.containsAll(mStringArrayCaptor.getValue(),
++                new String[]{"2001:db8::1", "192.0.2.1"}));
++        assertEquals(2, tlsServers.getValue().length);
++        assertTrue(ArrayUtils.containsAll(tlsServers.getValue(),
++                new String[]{"2001:db8::66", "192.0.2.44"}));
++        reset(mNetworkManagementService);
+ 
+         // Send the same LinkProperties and expect getting the same result including private dns.
+         // b/118518971
+@@ -4396,6 +4453,54 @@ public class ConnectivityServiceTest {
+     }
+ 
+     @Test
++    public void testVpnUnvalidated() throws Exception {
++        final TestNetworkCallback callback = new TestNetworkCallback();
++        mCm.registerDefaultNetworkCallback(callback);
++
++        // Enable private DNS.
++        setPrivateDnsSettings(PRIVATE_DNS_MODE_PROVIDER_HOSTNAME, "strict.example.com");
++
++        // Bring up Ethernet.
++        mEthernetNetworkAgent = new MockNetworkAgent(TRANSPORT_ETHERNET);
++        mEthernetNetworkAgent.getWrappedNetworkMonitor().dnsLookupResults =
++                new InetAddress[]{ InetAddress.getByName("2001:db8::1") };
++        mEthernetNetworkAgent.connect(true);
++        callback.expectAvailableThenValidatedCallbacks(mEthernetNetworkAgent);
++        callback.assertNoCallback();
++
++        // Bring up a VPN that has the INTERNET capability but does not provide Internet access.
++        final int uid = Process.myUid();
++        final MockNetworkAgent vpnNetworkAgent = new MockNetworkAgent(TRANSPORT_VPN);
++        vpnNetworkAgent.getWrappedNetworkMonitor().gen204ProbeResult = 500;
++        vpnNetworkAgent.getWrappedNetworkMonitor().dnsLookupResults = null;
++
++        final ArraySet<UidRange> ranges = new ArraySet<>();
++        ranges.add(new UidRange(uid, uid));
++        mMockVpn.setNetworkAgent(vpnNetworkAgent);
++        mMockVpn.setUids(ranges);
++        vpnNetworkAgent.connect(false /* validated */, true /* hasInternet */);
++        mMockVpn.connect();
++
++        // The VPN validates and becomes the default network for our app.
++        callback.expectAvailableCallbacksValidated(vpnNetworkAgent);
++        // TODO: this looks like a spurious callback.
++        callback.expectCallback(CallbackState.NETWORK_CAPABILITIES, vpnNetworkAgent);
++        callback.assertNoCallback();
++
++        assertTrue(vpnNetworkAgent.getScore() > mEthernetNetworkAgent.getScore());
++        assertEquals(ConnectivityConstants.VPN_DEFAULT_SCORE, vpnNetworkAgent.getScore());
++        assertEquals(vpnNetworkAgent.getNetwork(), mCm.getActiveNetwork());
++
++        NetworkCapabilities nc = mCm.getNetworkCapabilities(vpnNetworkAgent.getNetwork());
++        assertTrue(nc.hasCapability(NET_CAPABILITY_VALIDATED));
++        assertTrue(nc.hasCapability(NET_CAPABILITY_INTERNET));
++
++        vpnNetworkAgent.disconnect();
++        callback.expectCallback(CallbackState.LOST, vpnNetworkAgent);
++        callback.expectAvailableCallbacksValidated(mEthernetNetworkAgent);
++    }
++
++    @Test
+     public void testVpnSetUnderlyingNetworks() {
+         final int uid = Process.myUid();
+ 
+-- 
+2.7.4
+

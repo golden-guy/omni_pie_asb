@@ -1,0 +1,153 @@
+From 4b47a600e9ff6606f5bf6b470ea866fd758146c0 Mon Sep 17 00:00:00 2001
+From: Louis Dionne <ldionne@apple.com>
+Date: Wed, 4 Sep 2019 13:35:03 +0000
+Subject: [PATCH 4/5] DO NOT MERGE: [libc++] Move __clamp_to_integral to
+ <cmath>, and harden against min()/max() macros
+
+git-svn-id: https://llvm.org/svn/llvm-project/libcxx/trunk@370900 91177308-0d34-0410-b5e6-96231b3b80d8
+(cherry picked from commit 87e6185621d332d2ef8695b94778663380c83bb9)
+
+Bug: https://bugs.chromium.org/p/chromium/issues/detail?id=994957
+Bug: http://b/139690488
+Change-Id: Ice92a8ea6f675be069a70c5ad1003cf99b4fc474
+(cherry picked from commit 82e0483c4a47233ed2f7bab545b32e5ddd474e59)
+(cherry picked from commit c2ca4c16d1e26b4a628cf7f3a21ef90daef9116f)
+---
+ include/cmath                                      | 36 ++++++++++++++++++++++
+ include/math.h                                     | 34 --------------------
+ test/libcxx/numerics/c.math/undef_min_max.pass.cpp | 19 ++++++++++++
+ 3 files changed, 55 insertions(+), 34 deletions(-)
+ create mode 100644 test/libcxx/numerics/c.math/undef_min_max.pass.cpp
+
+diff --git a/include/cmath b/include/cmath
+index 917928a..e5cad0e 100644
+--- a/include/cmath
++++ b/include/cmath
+@@ -303,11 +303,15 @@ long double    truncl(long double x);
+ 
+ #include <__config>
+ #include <math.h>
++#include <type_traits>
+ 
+ #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
+ #pragma GCC system_header
+ #endif
+ 
++_LIBCPP_PUSH_MACROS
++#include <__undef_macros>
++
+ _LIBCPP_BEGIN_NAMESPACE_STD
+ 
+ using ::signbit;
+@@ -606,6 +610,38 @@ __libcpp_isfinite_or_builtin(_A1 __lcpp_x) _NOEXCEPT
+     return isfinite(__lcpp_x);
+ }
+ 
++template <class _IntT, class _FloatT,
++    bool _FloatBigger = (numeric_limits<_FloatT>::digits > numeric_limits<_IntT>::digits),
++    int _Bits = (numeric_limits<_IntT>::digits - numeric_limits<_FloatT>::digits)>
++_LIBCPP_INLINE_VISIBILITY
++_LIBCPP_CONSTEXPR _IntT __max_representable_int_for_float() _NOEXCEPT {
++  static_assert(is_floating_point<_FloatT>::value, "must be a floating point type");
++  static_assert(is_integral<_IntT>::value, "must be an integral type");
++  static_assert(numeric_limits<_FloatT>::radix == 2, "FloatT has incorrect radix");
++  static_assert(is_same<_FloatT, float>::value || is_same<_FloatT, double>::value
++               || is_same<_FloatT,long double>::value, "unsupported floating point type");
++  return _FloatBigger ? numeric_limits<_IntT>::max() :  (numeric_limits<_IntT>::max() >> _Bits << _Bits);
++}
++
++// Convert a floating point number to the specified integral type after
++// clamping to the integral types representable range.
++//
++// The behavior is undefined if `__r` is NaN.
++template <class _IntT, class _RealT>
++_LIBCPP_INLINE_VISIBILITY
++_IntT __clamp_to_integral(_RealT __r) _NOEXCEPT {
++  using _Lim = std::numeric_limits<_IntT>;
++  const _IntT _MaxVal = std::__max_representable_int_for_float<_IntT, _RealT>();
++  if (__r >= ::nextafter(static_cast<_RealT>(_MaxVal), INFINITY)) {
++    return _Lim::max();
++  } else if (__r <= _Lim::lowest()) {
++    return _Lim::min();
++  }
++  return static_cast<_IntT>(__r);
++}
++
+ _LIBCPP_END_NAMESPACE_STD
+ 
++_LIBCPP_POP_MACROS
++
+ #endif  // _LIBCPP_CMATH
+diff --git a/include/math.h b/include/math.h
+index 66b56e9..1476772 100644
+--- a/include/math.h
++++ b/include/math.h
+@@ -1490,40 +1490,6 @@ inline _LIBCPP_INLINE_VISIBILITY
+ typename std::enable_if<std::is_integral<_A1>::value, double>::type
+ trunc(_A1 __lcpp_x) _NOEXCEPT {return ::trunc((double)__lcpp_x);}
+ 
+-_LIBCPP_BEGIN_NAMESPACE_STD
+-
+-template <class _IntT, class _FloatT,
+-    bool _FloatBigger = (numeric_limits<_FloatT>::digits > numeric_limits<_IntT>::digits),
+-    int _Bits = (numeric_limits<_IntT>::digits - numeric_limits<_FloatT>::digits)>
+-_LIBCPP_INLINE_VISIBILITY
+-_LIBCPP_CONSTEXPR _IntT __max_representable_int_for_float() _NOEXCEPT {
+-  static_assert(is_floating_point<_FloatT>::value, "must be a floating point type");
+-  static_assert(is_integral<_IntT>::value, "must be an integral type");
+-  static_assert(numeric_limits<_FloatT>::radix == 2, "FloatT has incorrect radix");
+-  static_assert(_IsSame<_FloatT, float>::value || _IsSame<_FloatT, double>::value
+-               || _IsSame<_FloatT,long double>::value, "unsupported floating point type");
+-  return _FloatBigger ? numeric_limits<_IntT>::max() :  (numeric_limits<_IntT>::max() >> _Bits << _Bits);
+-}
+-
+-// Convert a floating point number to the specified integral type after
+-// clamping to the integral types representable range.
+-//
+-// The behavior is undefined if `__r` is NaN.
+-template <class _IntT, class _RealT>
+-_LIBCPP_INLINE_VISIBILITY
+-_IntT __clamp_to_integral(_RealT __r) _NOEXCEPT {
+-  using _Lim = std::numeric_limits<_IntT>;
+-  const _IntT _MaxVal = std::__max_representable_int_for_float<_IntT, _RealT>();
+-  if (__r >= ::nextafter(static_cast<_RealT>(_MaxVal), INFINITY)) {
+-    return _Lim::max();
+-  } else if (__r <= _Lim::lowest()) {
+-    return _Lim::min();
+-  }
+-  return static_cast<_IntT>(__r);
+-}
+-
+-_LIBCPP_END_NAMESPACE_STD
+-
+ } // extern "C++"
+ 
+ #endif // __cplusplus
+diff --git a/test/libcxx/numerics/c.math/undef_min_max.pass.cpp b/test/libcxx/numerics/c.math/undef_min_max.pass.cpp
+new file mode 100644
+index 0000000..ba1696e
+--- /dev/null
++++ b/test/libcxx/numerics/c.math/undef_min_max.pass.cpp
+@@ -0,0 +1,19 @@
++//
++// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
++// See https://llvm.org/LICENSE.txt for license information.
++// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
++//
++//===----------------------------------------------------------------------===//
++
++#if defined(__GNUC__) || defined(__clang__)
++#pragma GCC diagnostic ignored "-W#warnings"
++#endif
++
++#define min THIS IS A NASTY MACRO!
++#define max THIS IS A NASTY MACRO!
++
++#include <cmath>
++
++#include "test_macros.h"
++
++int main(int, char**) { return 0; }
+-- 
+2.7.4
+

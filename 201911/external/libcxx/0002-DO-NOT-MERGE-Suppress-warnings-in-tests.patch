@@ -1,0 +1,29 @@
+From 11b8fe17fcf857b7e59c543d0a111bba266547e2 Mon Sep 17 00:00:00 2001
+From: Dan Albert <danalbert@google.com>
+Date: Wed, 11 Sep 2019 14:50:13 -0700
+Subject: [PATCH 2/5] DO NOT MERGE: Suppress warnings in tests.
+
+Test: ./run_tests.py
+Bug: https://bugs.chromium.org/p/chromium/issues/detail?id=994957
+Bug: http://b/139690488
+Change-Id: I6ac409b692c7b949d3237a1fa824e90652e3c1c3
+(cherry picked from commit bb8457c3f4cdce9271d3e5239fc7a0e888e7a965)
+---
+ buildcmds/Android.mk | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/buildcmds/Android.mk b/buildcmds/Android.mk
+index 70f1701..b552e0c 100644
+--- a/buildcmds/Android.mk
++++ b/buildcmds/Android.mk
+@@ -34,6 +34,7 @@ LOCAL_CPPFLAGS := \
+     -Wno-reserved-user-defined-literal \
+     -Wno-unused-local-typedef \
+     -Wno-unused-variable \
++    -Wno-format-zero-length \
+ 
+ # Optimization is causing relocation for nothrow new to be thrown away.
+ # http://llvm.org/bugs/show_bug.cgi?id=21421
+-- 
+2.7.4
+

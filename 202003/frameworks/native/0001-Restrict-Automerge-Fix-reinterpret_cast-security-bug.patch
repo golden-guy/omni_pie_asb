@@ -1,0 +1,530 @@
+From dcc5c653f83dcdf458d7aa20aba0fb3823715786 Mon Sep 17 00:00:00 2001
+From: Valerie Hau <vhau@google.com>
+Date: Tue, 10 Dec 2019 09:09:22 -0800
+Subject: [PATCH] Restrict Automerge: Fix reinterpret_cast security bug
+
+This patch fixes a security bug in SurfaceFlinger.  Bug is due to a
+reinterpret_cast used when obtaining a sp<Layer> from an sp<IBinder> passed
+from a client.  Without a checking mechanism, client could pass a
+malicious data packet.  This is a modified cherry-pick of a patch by Rob Carr
+that utilizes a map to identify the appropriate layer based on
+the incoming IBinder token.
+
+Original patch commit:
+
+"Author: Robert Carr <racarr@google.com>
+Date:   Thu Apr 11 13:18:21 2019 -0700
+
+SurfaceFlinger: Validate layers before casting.
+
+Reinterpret casting random IBinder = no-fun. I first attempted
+to use inheritance of "getInterfaceDescriptor" in Layer::Handle but
+departing from "standard-layout" (e.g. using virtual methods) means that
+downcasting with static/reinterpret_cast is no longer valid. Instead I opted
+for the pattern the system-server uses of maintaing a map.
+
+Now that we look up the handle in a map rather than casting IBinder
+to Layer::Handle we need to make sure we have unique instances of the
+handle. In general this is true but we weren't doing this in the
+createWithSurfaceParent where we had an extra call to getHandle. Here
+we both refactor createWithSurfaceParent so it works with the new
+changes and also add protection for getHandle. We also fix an error
+where the handle map was populated outside of lock.
+"
+
+Bug: 137284057
+Test: build, boot, manual, SurfaceFlinger_test
+Change-Id: I9b5f298db2da9cd974c423eb52f261a90f0d17dc
+(cherry-picked from commit c4638082469e906c025c8c8a8614de65c59afc90)
+---
+ libs/gui/include/gui/SurfaceControl.h              |  10 +-
+ services/surfaceflinger/Client.cpp                 |  28 +----
+ services/surfaceflinger/Client.h                   |   2 +-
+ services/surfaceflinger/Layer.cpp                  |  13 ++-
+ services/surfaceflinger/Layer.h                    |   3 +
+ services/surfaceflinger/SurfaceFlinger.cpp         | 125 ++++++++++++++-------
+ services/surfaceflinger/SurfaceFlinger.h           |  24 ++--
+ services/surfaceflinger/tests/Android.bp           |   3 +-
+ .../surfaceflinger/tests/InvalidHandles_test.cpp   |  67 +++++++++++
+ 9 files changed, 196 insertions(+), 79 deletions(-)
+ create mode 100644 services/surfaceflinger/tests/InvalidHandles_test.cpp
+
+diff --git a/libs/gui/include/gui/SurfaceControl.h b/libs/gui/include/gui/SurfaceControl.h
+index bd987dd..38de299 100644
+--- a/libs/gui/include/gui/SurfaceControl.h
++++ b/libs/gui/include/gui/SurfaceControl.h
+@@ -76,6 +76,10 @@ public:
+ 
+     sp<SurfaceComposerClient> getClient() const;
+ 
++    SurfaceControl(const sp<SurfaceComposerClient>& client,
++                   const sp<IBinder>& handle,
++                   const sp<IGraphicBufferProducer>& gbp,
++                   bool owned);
+ private:
+     // can't be copied
+     SurfaceControl& operator = (SurfaceControl& rhs);
+@@ -84,12 +88,6 @@ private:
+     friend class SurfaceComposerClient;
+     friend class Surface;
+ 
+-    SurfaceControl(
+-            const sp<SurfaceComposerClient>& client,
+-            const sp<IBinder>& handle,
+-            const sp<IGraphicBufferProducer>& gbp,
+-            bool owned);
+-
+     ~SurfaceControl();
+ 
+     sp<Surface> generateSurfaceLocked() const;
+diff --git a/services/surfaceflinger/Client.cpp b/services/surfaceflinger/Client.cpp
+index 0b59147..09d87b2 100644
+--- a/services/surfaceflinger/Client.cpp
++++ b/services/surfaceflinger/Client.cpp
+@@ -118,7 +118,6 @@ sp<Layer> Client::getLayerUser(const sp<IBinder>& handle) const
+     return lbc;
+ }
+ 
+-
+ status_t Client::onTransact(
+     uint32_t code, const Parcel& data, Parcel* reply, uint32_t flags)
+ {
+@@ -144,34 +143,19 @@ status_t Client::onTransact(
+      return BnSurfaceComposerClient::onTransact(code, data, reply, flags);
+ }
+ 
+-
+ status_t Client::createSurface(
+         const String8& name,
+         uint32_t w, uint32_t h, PixelFormat format, uint32_t flags,
+         const sp<IBinder>& parentHandle, int32_t windowType, int32_t ownerUid,
+         sp<IBinder>* handle,
+-        sp<IGraphicBufferProducer>* gbp)
+-{
+-    sp<Layer> parent = nullptr;
+-    if (parentHandle != nullptr) {
+-        auto layerHandle = reinterpret_cast<Layer::Handle*>(parentHandle.get());
+-        parent = layerHandle->owner.promote();
+-        if (parent == nullptr) {
+-            return NAME_NOT_FOUND;
+-        }
+-    }
+-    if (parent == nullptr) {
+-        bool parentDied;
+-        parent = getParentLayer(&parentDied);
+-        // If we had a parent, but it died, we've lost all
+-        // our capabilities.
+-        if (parentDied) {
+-            return NAME_NOT_FOUND;
+-        }
++        sp<IGraphicBufferProducer>* gbp) {
++    bool parentDied;
++    sp<Layer> parentLayer = getParentLayer(&parentDied);
++    if (parentHandle == nullptr && parentDied) {
++        return NAME_NOT_FOUND;
+     }
+-
+     return mFlinger->createLayer(name, this, w, h, format, flags, windowType,
+-                                 ownerUid, handle, gbp, &parent);
++                                 ownerUid, handle, gbp, parentHandle, parentLayer);
+ }
+ 
+ status_t Client::destroySurface(const sp<IBinder>& handle) {
+diff --git a/services/surfaceflinger/Client.h b/services/surfaceflinger/Client.h
+index 49437ed..36b685d 100644
+--- a/services/surfaceflinger/Client.h
++++ b/services/surfaceflinger/Client.h
+@@ -58,7 +58,7 @@ private:
+     virtual status_t createSurface(
+             const String8& name,
+             uint32_t w, uint32_t h,PixelFormat format, uint32_t flags,
+-            const sp<IBinder>& parent, int32_t windowType, int32_t ownerUid,
++            const sp<IBinder>& parentHandle, int32_t windowType, int32_t ownerUid,
+             sp<IBinder>* handle,
+             sp<IGraphicBufferProducer>* gbp);
+ 
+diff --git a/services/surfaceflinger/Layer.cpp b/services/surfaceflinger/Layer.cpp
+index e7f9d98..4ed155f 100644
+--- a/services/surfaceflinger/Layer.cpp
++++ b/services/surfaceflinger/Layer.cpp
+@@ -183,9 +183,13 @@ Layer::~Layer() {
+ void Layer::onLayerDisplayed(const sp<Fence>& /*releaseFence*/) {}
+ 
+ void Layer::onRemovedFromCurrentState() {
+-    // the layer is removed from SF mCurrentState to mLayersPendingRemoval
++    if (!mPendingRemoval) {
++        // the layer is removed from SF mCurrentState to mLayersPendingRemoval
++        mPendingRemoval = true;
+ 
+-    mPendingRemoval = true;
++        // remove from sf mapping
++        mFlinger->removeLayerFromMap(this);
++    }
+ 
+     if (mCurrentState.zOrderRelativeOf != nullptr) {
+         sp<Layer> strongRelative = mCurrentState.zOrderRelativeOf.promote();
+@@ -226,6 +230,11 @@ bool Layer::getPremultipledAlpha() const {
+ 
+ sp<IBinder> Layer::getHandle() {
+     Mutex::Autolock _l(mLock);
++    if (mGetHandleCalled) {
++        ALOGE("Get handle called twice" );
++        return nullptr;
++    }
++    mGetHandleCalled = true;
+     return new Handle(mFlinger, this);
+ }
+ 
+diff --git a/services/surfaceflinger/Layer.h b/services/surfaceflinger/Layer.h
+index 26c0e22..7c9d26e 100644
+--- a/services/surfaceflinger/Layer.h
++++ b/services/surfaceflinger/Layer.h
+@@ -706,6 +706,8 @@ public:
+         wp<Layer> owner;
+     };
+ 
++    // Creates a new handle each time, so we only expect
++    // this to be called once.
+     sp<IBinder> getHandle();
+     const String8& getName() const;
+     virtual void notifyAvailableFrames() {}
+@@ -810,6 +812,7 @@ private:
+                                        const LayerVector::Visitor& visitor);
+     LayerVector makeChildrenTraversalList(LayerVector::StateSet stateSet,
+                                           const std::vector<Layer*>& layersInTree);
++    bool mGetHandleCalled = false;
+ };
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/services/surfaceflinger/SurfaceFlinger.cpp b/services/surfaceflinger/SurfaceFlinger.cpp
+index b6bb5c7..6c84a76 100644
+--- a/services/surfaceflinger/SurfaceFlinger.cpp
++++ b/services/surfaceflinger/SurfaceFlinger.cpp
+@@ -3131,20 +3131,34 @@ void SurfaceFlinger::drawWormhole(const sp<const DisplayDevice>& displayDevice,
+     engine.fillRegionWithColor(region, height, 0, 0, 0, 0);
+ }
+ 
+-status_t SurfaceFlinger::addClientLayer(const sp<Client>& client,
+-        const sp<IBinder>& handle,
+-        const sp<IGraphicBufferProducer>& gbc,
+-        const sp<Layer>& lbc,
+-        const sp<Layer>& parent)
+-{
++status_t SurfaceFlinger::addClientLayer(const sp<Client>& client, const sp<IBinder>& handle,
++                                        const sp<IGraphicBufferProducer>& gbc, const sp<Layer>& lbc,
++                                        const sp<IBinder>& parentHandle,
++                                        const sp<Layer>& parentLayer) {
+     // add this layer to the current state list
+     {
+         Mutex::Autolock _l(mStateLock);
++        sp<Layer> parent;
++
++        if (parentHandle != nullptr) {
++            parent = fromHandle(parentHandle);
++            if (parent == nullptr) {
++                return NAME_NOT_FOUND;
++            }
++        } else {
++            parent = parentLayer;
++        }
++
+         if (mNumLayers >= MAX_LAYERS) {
+             ALOGE("AddClientLayer failed, mNumLayers (%zu) >= MAX_LAYERS (%zu)", mNumLayers,
+                   MAX_LAYERS);
+             return NO_MEMORY;
+         }
++
++        auto [itr, inserted] = mLayersByLocalBinderToken.emplace(handle->localBinder(), lbc);
++        if (!inserted) {
++          ALOGE("-----------ERROR REGISTERING HANDLE, layer pair: handle is already a key");
++        }
+         if (parent == nullptr) {
+             mCurrentState.layersSortedByZ.add(lbc);
+         } else {
+@@ -3178,6 +3192,24 @@ status_t SurfaceFlinger::removeLayer(const sp<Layer>& layer, bool topLevelOnly)
+     return removeLayerLocked(mStateLock, layer, topLevelOnly);
+ }
+ 
++status_t SurfaceFlinger::removeLayerFromMap(Layer* layer) {
++    auto it = mLayersByLocalBinderToken.begin();
++    while (it != mLayersByLocalBinderToken.end()) {
++        auto strongRef = it->second.promote();
++        if (strongRef != nullptr && strongRef.get() == layer) {
++            it = mLayersByLocalBinderToken.erase(it);
++            break;
++        } else {
++            it++;
++        }
++    }
++    if (it == mLayersByLocalBinderToken.end()) {
++        ALOGE("Failed to remove layer from mapping - could not find matching layer");
++        return BAD_VALUE;
++    }
++    return NO_ERROR;
++}
++
+ status_t SurfaceFlinger::removeLayerLocked(const Mutex&, const sp<Layer>& layer,
+                                            bool topLevelOnly) {
+     if (layer->isPendingRemoval()) {
+@@ -3614,13 +3646,12 @@ void SurfaceFlinger::setDestroyStateLocked(const ComposerState& composerState) {
+     }
+ }
+ 
+-status_t SurfaceFlinger::createLayer(
+-        const String8& name,
+-        const sp<Client>& client,
+-        uint32_t w, uint32_t h, PixelFormat format, uint32_t flags,
+-        int32_t windowType, int32_t ownerUid, sp<IBinder>* handle,
+-        sp<IGraphicBufferProducer>* gbp, sp<Layer>* parent)
+-{
++status_t SurfaceFlinger::createLayer(const String8& name, const sp<Client>& client, uint32_t w,
++                                     uint32_t h, PixelFormat format, uint32_t flags,
++                                     int32_t windowType, int32_t ownerUid, sp<IBinder>* handle,
++                                     sp<IGraphicBufferProducer>* gbp,
++                                     const sp<IBinder>& parentHandle,
++                                     const sp<Layer>& parentLayer) {
+     if (int32_t(w|h) < 0) {
+         ALOGE("createLayer() failed, w or h is negative (w=%d, h=%d)",
+                 int(w), int(h));
+@@ -3668,7 +3699,7 @@ status_t SurfaceFlinger::createLayer(
+ 
+     layer->setInfo(windowType, ownerUid);
+ 
+-    result = addClientLayer(client, *handle, *gbp, layer, *parent);
++    result = addClientLayer(client, *handle, *gbp, layer, parentHandle, parentLayer);
+     if (result != NO_ERROR) {
+         return result;
+     }
+@@ -4940,34 +4971,40 @@ status_t SurfaceFlinger::captureLayers(const sp<IBinder>& layerHandleBinder,
+         const bool mChildrenOnly;
+     };
+ 
+-    auto layerHandle = reinterpret_cast<Layer::Handle*>(layerHandleBinder.get());
+-    auto parent = layerHandle->owner.promote();
++    int reqWidth = 0;
++    int reqHeight = 0;
++    sp<Layer> parent;
++    Rect crop(sourceCrop);
+ 
+-    if (parent == nullptr || parent->isPendingRemoval()) {
+-        ALOGE("captureLayers called with a removed parent");
+-        return NAME_NOT_FOUND;
+-    }
++    {
++        Mutex::Autolock _l(mStateLock);
+ 
+-    const int uid = IPCThreadState::self()->getCallingUid();
+-    const bool forSystem = uid == AID_GRAPHICS || uid == AID_SYSTEM;
+-    if (!forSystem && parent->getCurrentState().flags & layer_state_t::eLayerSecure) {
+-        ALOGW("Attempting to capture secure layer: PERMISSION_DENIED");
+-        return PERMISSION_DENIED;
+-    }
++        parent = fromHandle(layerHandleBinder);
++        if (parent == nullptr || parent->isPendingRemoval()) {
++            ALOGE("captureLayers called with an invalid or removed parent");
++            return NAME_NOT_FOUND;
++        }
+ 
+-    Rect crop(sourceCrop);
+-    if (sourceCrop.width() <= 0) {
+-        crop.left = 0;
+-        crop.right = parent->getCurrentState().active.w;
+-    }
++        const int uid = IPCThreadState::self()->getCallingUid();
++        const bool forSystem = uid == AID_GRAPHICS || uid == AID_SYSTEM;
++        if (!forSystem && parent->getCurrentState().flags & layer_state_t::eLayerSecure) {
++            ALOGW("Attempting to capture secure layer: PERMISSION_DENIED");
++            return PERMISSION_DENIED;
++        }
+ 
+-    if (sourceCrop.height() <= 0) {
+-        crop.top = 0;
+-        crop.bottom = parent->getCurrentState().active.h;
+-    }
++        if (sourceCrop.width() <= 0) {
++            crop.left = 0;
++            crop.right = parent->getCurrentState().active.w;
++        }
++
++        if (sourceCrop.height() <= 0) {
++            crop.top = 0;
++            crop.bottom = parent->getCurrentState().active.h;
++        }
+ 
+-    int32_t reqWidth = crop.width() * frameScale;
+-    int32_t reqHeight = crop.height() * frameScale;
++        reqWidth = crop.width() * frameScale;
++        reqHeight = crop.height() * frameScale;
++    } // mStateLock
+ 
+     LayerRenderArea renderArea(this, parent, crop, reqWidth, reqHeight, childrenOnly);
+ 
+@@ -5292,8 +5329,20 @@ void SurfaceFlinger::traverseLayersInDisplay(const sp<const DisplayDevice>& hw,
+     }
+ }
+ 
+-}; // namespace android
++sp<Layer> SurfaceFlinger::fromHandle(const sp<IBinder>& handle) {
++    BBinder *b = handle->localBinder();
++    if (b == nullptr) {
++        return nullptr;
++    }
++    auto it = mLayersByLocalBinderToken.find(b);
++    if (it != mLayersByLocalBinderToken.end()) {
++        auto ret = it->second.promote();
++        return ret;
++    }
++    return nullptr;
++}
+ 
++} // namespace android
+ 
+ #if defined(__gl_h_)
+ #error "don't include gl/gl.h in this file"
+diff --git a/services/surfaceflinger/SurfaceFlinger.h b/services/surfaceflinger/SurfaceFlinger.h
+index 086a094..213cb41 100644
+--- a/services/surfaceflinger/SurfaceFlinger.h
++++ b/services/surfaceflinger/SurfaceFlinger.h
+@@ -347,6 +347,8 @@ public:
+ 
+     int getPrimaryDisplayOrientation() const { return mPrimaryDisplayOrientation; }
+ 
++    sp<Layer> fromHandle(const sp<IBinder>& handle) REQUIRES(mStateLock);
++
+ private:
+     friend class Client;
+     friend class DisplayEventConnection;
+@@ -528,10 +530,10 @@ private:
+     /* ------------------------------------------------------------------------
+      * Layer management
+      */
+-    status_t createLayer(const String8& name, const sp<Client>& client,
+-            uint32_t w, uint32_t h, PixelFormat format, uint32_t flags,
+-            int32_t windowType, int32_t ownerUid, sp<IBinder>* handle,
+-            sp<IGraphicBufferProducer>* gbp, sp<Layer>* parent);
++    status_t createLayer(const String8& name, const sp<Client>& client, uint32_t w, uint32_t h,
++                         PixelFormat format, uint32_t flags, int32_t windowType, int32_t ownerUid,
++                         sp<IBinder>* handle, sp<IGraphicBufferProducer>* gbp,
++                         const sp<IBinder>& parentHandle, const sp<Layer>& parentLayer = nullptr);
+ 
+     status_t createBufferLayer(const sp<Client>& client, const String8& name,
+             uint32_t w, uint32_t h, uint32_t flags, PixelFormat& format,
+@@ -561,12 +563,13 @@ private:
+     status_t removeLayer(const sp<Layer>& layer, bool topLevelOnly = false);
+     status_t removeLayerLocked(const Mutex&, const sp<Layer>& layer, bool topLevelOnly = false);
+ 
++    // remove layer from mapping
++    status_t removeLayerFromMap(Layer* layer);
++
+     // add a layer to SurfaceFlinger
+-    status_t addClientLayer(const sp<Client>& client,
+-            const sp<IBinder>& handle,
+-            const sp<IGraphicBufferProducer>& gbc,
+-            const sp<Layer>& lbc,
+-            const sp<Layer>& parent);
++    status_t addClientLayer(const sp<Client>& client, const sp<IBinder>& handle,
++                            const sp<IGraphicBufferProducer>& gbc, const sp<Layer>& lbc,
++                            const sp<IBinder>& parentHandle, const sp<Layer>& parentLayer);
+ 
+     /* ------------------------------------------------------------------------
+      * Boot animation, on/off animations and screen capture
+@@ -836,6 +839,9 @@ private:
+     // it may be read from other threads with mStateLock held
+     DefaultKeyedVector< wp<IBinder>, sp<DisplayDevice> > mDisplays;
+ 
++    // protected by mStateLock
++    std::unordered_map<BBinder*, wp<Layer>> mLayersByLocalBinderToken;
++
+     // don't use a lock for these, we don't care
+     int mDebugRegion;
+     int mDebugDDMS;
+diff --git a/services/surfaceflinger/tests/Android.bp b/services/surfaceflinger/tests/Android.bp
+index 322e8a0..2331dfd 100644
+--- a/services/surfaceflinger/tests/Android.bp
++++ b/services/surfaceflinger/tests/Android.bp
+@@ -18,7 +18,8 @@ cc_test {
+     tags: ["test"],
+     test_suites: ["device-tests"],
+     srcs: [
+-        "Stress_test.cpp",
++        "InvalidHandles_test.cpp",
++	"Stress_test.cpp",
+         "SurfaceInterceptor_test.cpp",
+         "Transaction_test.cpp",
+     ],
+diff --git a/services/surfaceflinger/tests/InvalidHandles_test.cpp b/services/surfaceflinger/tests/InvalidHandles_test.cpp
+new file mode 100644
+index 0000000..42d1f5a
+--- /dev/null
++++ b/services/surfaceflinger/tests/InvalidHandles_test.cpp
+@@ -0,0 +1,67 @@
++/*
++ * Copyright (C) 2019 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include <binder/Binder.h>
++
++#include <gtest/gtest.h>
++
++#include <gui/ISurfaceComposer.h>
++#include <gui/SurfaceComposerClient.h>
++#include <private/gui/ComposerService.h>
++#include <ui/Rect.h>
++
++namespace android {
++namespace {
++
++class NotALayer : public BBinder {};
++
++/**
++ * For all of these tests we make a SurfaceControl with an invalid layer handle
++ * and verify we aren't able to trick SurfaceFlinger.
++ */
++class InvalidHandleTest : public ::testing::Test {
++protected:
++    sp<SurfaceComposerClient> mScc;
++    sp<SurfaceControl> mNotSc;
++    void SetUp() override {
++        mScc = new SurfaceComposerClient;
++        ASSERT_EQ(NO_ERROR, mScc->initCheck());
++        mNotSc = makeNotSurfaceControl();
++    }
++
++    sp<SurfaceControl> makeNotSurfaceControl() {
++        return new SurfaceControl(mScc, new NotALayer(), nullptr, true);
++    }
++};
++
++TEST_F(InvalidHandleTest, createSurfaceInvalidHandle) {
++    auto notSc = makeNotSurfaceControl();
++    ASSERT_EQ(nullptr,
++              mScc->createSurface(String8("lolcats"), 19, 47, PIXEL_FORMAT_RGBA_8888, 0,
++                                  notSc.get())
++                      .get());
++}
++
++TEST_F(InvalidHandleTest, captureLayersInvalidHandle) {
++    sp<ISurfaceComposer> sf(ComposerService::getComposerService());
++    sp<GraphicBuffer> outBuffer;
++
++    ASSERT_EQ(NAME_NOT_FOUND,
++              sf->captureLayers(mNotSc->getHandle(), &outBuffer, Rect::EMPTY_RECT, 1.0f));
++}
++
++} // namespace
++} // namespace android
+-- 
+2.7.4
+

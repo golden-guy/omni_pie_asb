@@ -1,0 +1,69 @@
+From 187da9d3208776b4c294d9e2e0e267ebb193d099 Mon Sep 17 00:00:00 2001
+From: paulhu <paulhu@google.com>
+Date: Mon, 16 Dec 2019 18:24:05 +0800
+Subject: [PATCH 1/4] Fix security problem on PermissionMonitor#hasPermission
+
+PermissionMonitor#hasPermission only checks permssions that app
+requested but it doesn't check whether the permission can be
+granted to this app. If requested permission doens't be granted
+to app, this method still returns that app has this permission.
+Then PermissionMonitor will pass this info to netd that means
+this app still can use network even restricted network without
+granted privileged permission like CONNECTIVITY_INTERNAL or
+CONNECTIVITY_USE_RESTRICTED_NETWORKS.
+
+Bug: 144679405
+Test: Build, flash, manual test
+Change-Id: Iae9c273af822b18c2e6fce04848a86f8dea6410a
+Merged-In: I8a1575dedd6e3b7a8b60ee2ffd475d790aec55c4
+Merged-In: I2da730feda4d7ebed1f158b073167bb3964b3e7d
+(cherry picked from commit d0205a3469dc8d8122e89072c19d0e9f18e7452f)
+---
+ .../android/server/connectivity/PermissionMonitor.java   | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/services/core/java/com/android/server/connectivity/PermissionMonitor.java b/services/core/java/com/android/server/connectivity/PermissionMonitor.java
+index e471c7d..5722f5a 100644
+--- a/services/core/java/com/android/server/connectivity/PermissionMonitor.java
++++ b/services/core/java/com/android/server/connectivity/PermissionMonitor.java
+@@ -22,6 +22,7 @@ import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
+ import static android.Manifest.permission.NETWORK_STACK;
+ import static android.content.pm.ApplicationInfo.FLAG_SYSTEM;
+ import static android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP;
++import static android.content.pm.PackageInfo.REQUESTED_PERMISSION_GRANTED;
+ import static android.content.pm.PackageManager.GET_PERMISSIONS;
+ 
+ import android.content.BroadcastReceiver;
+@@ -42,6 +43,7 @@ import android.text.TextUtils;
+ import android.util.Log;
+ 
+ import com.android.internal.annotations.VisibleForTesting;
++import com.android.internal.util.ArrayUtils;
+ 
+ import java.util.ArrayList;
+ import java.util.HashMap;
+@@ -161,15 +163,13 @@ public class PermissionMonitor {
+     }
+ 
+     @VisibleForTesting
+-    boolean hasPermission(PackageInfo app, String permission) {
+-        if (app.requestedPermissions != null) {
+-            for (String p : app.requestedPermissions) {
+-                if (permission.equals(p)) {
+-                    return true;
+-                }
+-            }
++    boolean hasPermission(final PackageInfo app, final String permission) {
++        if (app.requestedPermissions == null || app.requestedPermissionsFlags == null) {
++            return false;
+         }
+-        return false;
++        final int index = ArrayUtils.indexOf(app.requestedPermissions, permission);
++        if (index < 0 || index >= app.requestedPermissionsFlags.length) return false;
++        return (app.requestedPermissionsFlags[index] & REQUESTED_PERMISSION_GRANTED) != 0;
+     }
+ 
+     private boolean hasNetworkPermission(PackageInfo app) {
+-- 
+2.7.4
+

@@ -1,0 +1,28 @@
+From e33f3478bf447a46c84a36024efb5bb11ffe5900 Mon Sep 17 00:00:00 2001
+From: Robert Shih <robertshih@google.com>
+Date: Sun, 17 Nov 2019 23:54:21 -0800
+Subject: [PATCH] default drm hidl: Fix decrypt destination base ptr
+
+Bug: 144351324
+Test: poc_CryptoPlugin_155
+Change-Id: Id5d221cd6978d55c46c0368aceb10c1d2f559fd9
+(cherry picked from commit d79abbb0d359dd037e6d0b4cc022fd26cea3ebaa)
+---
+ drm/1.0/default/CryptoPlugin.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drm/1.0/default/CryptoPlugin.cpp b/drm/1.0/default/CryptoPlugin.cpp
+index 4fe6c9b..19666f5 100644
+--- a/drm/1.0/default/CryptoPlugin.cpp
++++ b/drm/1.0/default/CryptoPlugin.cpp
+@@ -153,6 +153,7 @@ namespace implementation {
+                 return Void();
+             }
+ 
++            base = static_cast<uint8_t *>(static_cast<void *>(destBase->getPointer()));
+             destPtr = static_cast<void *>(base + destination.nonsecureMemory.offset);
+         } else if (destination.type == BufferType::NATIVE_HANDLE) {
+             if (!secure) {
+-- 
+2.7.4
+

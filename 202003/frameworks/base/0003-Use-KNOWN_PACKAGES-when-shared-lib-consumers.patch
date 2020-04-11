@@ -1,0 +1,54 @@
+From 197429e67e2323414bb6937c39658e117cf88299 Mon Sep 17 00:00:00 2001
+From: Patrick Baumann <patb@google.com>
+Date: Thu, 10 Oct 2019 15:50:28 -0700
+Subject: [PATCH 3/4] Use KNOWN_PACKAGES when shared lib consumers
+
+This change ensures we find ALL known packages that could be consuming a
+shared library, not only currently installed ones. Without this check,
+the system may get into a state in which we have currently uninstalled
+but on-device apps that depend on a shared library that does not exist
+on device.
+
+This change also leaves static shared library packages on device even if
+it's not installed for any of the remaining users as it could still be
+used, but marked uninstalled for users in which it is consumed.
+
+Bug: 141413692
+Bug: 142083996
+Test: Manual; attempt to remove shared lib after marking its consumer uninstalled.
+Test: atest StaticSharedLibsHostTests
+Change-Id: Id4e37c3e4d3ea3ad5fddae5d2c7305e56f50eeea
+Merged-In: Id4e37c3e4d3ea3ad5fddae5d2c7305e56f50eeea
+(cherry picked from commit 08315953bc42fb392c32293418dfb2a3e4ffbe53)
+---
+ .../core/java/com/android/server/pm/PackageManagerService.java     | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/services/core/java/com/android/server/pm/PackageManagerService.java b/services/core/java/com/android/server/pm/PackageManagerService.java
+index 84cd46c..be5a61f 100644
+--- a/services/core/java/com/android/server/pm/PackageManagerService.java
++++ b/services/core/java/com/android/server/pm/PackageManagerService.java
+@@ -18363,7 +18363,7 @@ public class PackageManagerService extends IPackageManager.Stub
+                             continue;
+                         }
+                         List<VersionedPackage> libClientPackages = getPackagesUsingSharedLibraryLPr(
+-                                libEntry.info, 0, currUserId);
++                                libEntry.info, MATCH_KNOWN_PACKAGES, currUserId);
+                         if (!ArrayUtils.isEmpty(libClientPackages)) {
+                             Slog.w(TAG, "Not removing package " + pkg.manifestPackageName
+                                     + " hosting lib " + libEntry.info.getName() + " version "
+@@ -23377,8 +23377,9 @@ Slog.v(TAG, ":: stepped forward, applying functor at tag " + parser.getName());
+                 continue;
+             }
+             final String packageName = ps.pkg.packageName;
+-            // Skip over if system app
+-            if ((ps.pkgFlags & ApplicationInfo.FLAG_SYSTEM) != 0) {
++            // Skip over if system app or static shared library
++            if ((ps.pkgFlags & ApplicationInfo.FLAG_SYSTEM) != 0
++                    || !TextUtils.isEmpty(ps.pkg.staticSharedLibName)) {
+                 continue;
+             }
+             if (DEBUG_CLEAN_APKS) {
+-- 
+2.7.4
+

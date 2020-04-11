@@ -1,0 +1,80 @@
+From 07694feed9196a5595d480716bcba65d0cb5d8c0 Mon Sep 17 00:00:00 2001
+From: Patrick Baumann <patb@google.com>
+Date: Fri, 23 Aug 2019 13:50:23 -0700
+Subject: [PATCH 2/4] Handles null outInfo in deleteSystemPackageLI
+
+This change adds null checks before accessing outInfo in
+deleteSystemPackageLI.
+
+Bug: 142083996
+Bug: 141413692
+Test: manual; remove static dependency on eng build and reboot
+Change-Id: If0fd48343e89cbb77ccd25826656194195d5b0cd
+(cherry picked from commit 17471016508bb9c9ffb8c3946dda0b4897d722f1)
+Merged-In: If0fd48343e89cbb77ccd25826656194195d5b0cd
+(cherry picked from commit 6afabce549f5725988b9c03de932c34e9d22f10e)
+---
+ .../android/server/pm/PackageManagerService.java   | 33 ++++++++++++----------
+ 1 file changed, 18 insertions(+), 15 deletions(-)
+
+diff --git a/services/core/java/com/android/server/pm/PackageManagerService.java b/services/core/java/com/android/server/pm/PackageManagerService.java
+index b7f8cad..84cd46c 100644
+--- a/services/core/java/com/android/server/pm/PackageManagerService.java
++++ b/services/core/java/com/android/server/pm/PackageManagerService.java
+@@ -18735,7 +18735,8 @@ public class PackageManagerService extends IPackageManager.Stub
+      * Tries to delete system package.
+      */
+     private boolean deleteSystemPackageLIF(PackageParser.Package deletedPkg,
+-            PackageSetting deletedPs, int[] allUserHandles, int flags, PackageRemovedInfo outInfo,
++            PackageSetting deletedPs, int[] allUserHandles, int flags,
++            @Nullable PackageRemovedInfo outInfo,
+             boolean writeSettings) {
+         if (deletedPs.parentPackageName != null) {
+             Slog.w(TAG, "Attempt to delete child system package " + deletedPkg.packageName);
+@@ -18743,7 +18744,7 @@ public class PackageManagerService extends IPackageManager.Stub
+         }
+ 
+         final boolean applyUserRestrictions
+-                = (allUserHandles != null) && (outInfo.origUsers != null);
++                = (allUserHandles != null) && outInfo != null && (outInfo.origUsers != null);
+         final PackageSetting disabledPs;
+         // Confirm if the system package has been updated
+         // An updated system app can be deleted. This will also have to restore
+@@ -18773,19 +18774,21 @@ public class PackageManagerService extends IPackageManager.Stub
+             }
+         }
+ 
+-        // Delete the updated package
+-        outInfo.isRemovedPackageSystemUpdate = true;
+-        if (outInfo.removedChildPackages != null) {
+-            final int childCount = (deletedPs.childPackageNames != null)
+-                    ? deletedPs.childPackageNames.size() : 0;
+-            for (int i = 0; i < childCount; i++) {
+-                String childPackageName = deletedPs.childPackageNames.get(i);
+-                if (disabledPs.childPackageNames != null && disabledPs.childPackageNames
+-                        .contains(childPackageName)) {
+-                    PackageRemovedInfo childInfo = outInfo.removedChildPackages.get(
+-                            childPackageName);
+-                    if (childInfo != null) {
+-                        childInfo.isRemovedPackageSystemUpdate = true;
++        if (outInfo != null) {
++            // Delete the updated package
++            outInfo.isRemovedPackageSystemUpdate = true;
++            if (outInfo.removedChildPackages != null) {
++                final int childCount = (deletedPs.childPackageNames != null)
++                        ? deletedPs.childPackageNames.size() : 0;
++                for (int i = 0; i < childCount; i++) {
++                    String childPackageName = deletedPs.childPackageNames.get(i);
++                    if (disabledPs.childPackageNames != null && disabledPs.childPackageNames
++                            .contains(childPackageName)) {
++                        PackageRemovedInfo childInfo = outInfo.removedChildPackages.get(
++                                childPackageName);
++                        if (childInfo != null) {
++                            childInfo.isRemovedPackageSystemUpdate = true;
++                        }
+                     }
+                 }
+             }
+-- 
+2.7.4
+

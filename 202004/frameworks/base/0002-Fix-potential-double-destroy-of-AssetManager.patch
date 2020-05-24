@@ -1,0 +1,51 @@
+From 4323530695fcb26e43f85ea923b016d77944f5b3 Mon Sep 17 00:00:00 2001
+From: Riddle Hsu <riddlehsu@google.com>
+Date: Thu, 4 Jul 2019 16:10:08 +0800
+Subject: [PATCH 2/2] Fix potential double destroy of AssetManager
+
+Assume there is a XmlBlock [X] created by a AssetManager [A]
+([A] will have mNumRefs = 2). After [A].close is called
+(mNumRefs = 1) and then both [X] and [A] are going to be GCed,
+if [A].finalize is called first (nativeDestroy), the later
+[X].finalize will invoke [A].xmlBlockGone that triggers the
+second nativeDestroy of [A] and leads to crash.
+
+By clearing the mObject in AssetManager.finalize, the
+decRefsLocked from other paths won't call nativeDestroy again.
+
+Bug: 136721562
+Bug: 144028297
+Test: atest AssetManagerTest
+Test: Build and install CorePerfTests
+      adb shell am instrument -w -r --no-hidden-api-checks -e class \
+      android.app.ResourcesPerfTest#getLayoutAndTravese,android.graphics.perftests.RenderNodePerfTest \
+      com.android.perftests.core/androidx.test.runner.AndroidJUnitRunner
+
+Change-Id: Ia938502d2443f5a6de6a3cabdb7ce1d41d3ff6d1
+Merged-In: Ia938502d2443f5a6de6a3cabdb7ce1d41d3ff6d1
+(cherry picked from commit 0a8a1e9d40a3cdff06150c43c623fa4c415226b6)
+---
+ core/java/android/content/res/AssetManager.java | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/core/java/android/content/res/AssetManager.java b/core/java/android/content/res/AssetManager.java
+index 2895342..4ddaa9b 100644
+--- a/core/java/android/content/res/AssetManager.java
++++ b/core/java/android/content/res/AssetManager.java
+@@ -1050,8 +1050,11 @@ public final class AssetManager implements AutoCloseable {
+             }
+         }
+ 
+-        if (mObject != 0) {
+-            nativeDestroy(mObject);
++        synchronized (this) {
++            if (mObject != 0) {
++                nativeDestroy(mObject);
++                mObject = 0;
++            }
+         }
+     }
+ 
+-- 
+2.7.4
+

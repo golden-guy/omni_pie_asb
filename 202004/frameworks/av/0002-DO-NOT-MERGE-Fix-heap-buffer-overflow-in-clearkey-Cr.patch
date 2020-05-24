@@ -1,0 +1,35 @@
+From 179db79b1cec82ac961099a22c702fb342e75974 Mon Sep 17 00:00:00 2001
+From: Edwin Wong <edwinwong@google.com>
+Date: Tue, 17 Dec 2019 17:56:17 -0800
+Subject: [PATCH 2/2] [DO NOT MERGE] Fix heap buffer overflow in clearkey
+ CryptoPlugin::decrypt
+
+Fix destPtr was not pointing to destination raw pointer.
+
+bug: 144506242
+
+Test: sts
+  ANDROID_BUILD_TOP= ./android-sts/tools/sts-tradefed run sts-engbuild-no-spl-lock -m StsHostTestCases --test android.security.sts.Poc19_12#testPocBug_144506242
+
+Change-Id: I9425baa21c82d5a5edf37c87989adbade0428b67
+(cherry picked from commit dc4c427b2155a9928a7cdaac7c0a787dd9c8192d)
+---
+ drm/mediadrm/plugins/clearkey/hidl/CryptoPlugin.cpp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drm/mediadrm/plugins/clearkey/hidl/CryptoPlugin.cpp b/drm/mediadrm/plugins/clearkey/hidl/CryptoPlugin.cpp
+index 198e099..cd2224d 100644
+--- a/drm/mediadrm/plugins/clearkey/hidl/CryptoPlugin.cpp
++++ b/drm/mediadrm/plugins/clearkey/hidl/CryptoPlugin.cpp
+@@ -106,6 +106,8 @@ Return<void> CryptoPlugin::decrypt(
+         return Void();
+     }
+ 
++    base = static_cast<uint8_t *>(static_cast<void *>(destBase->getPointer()));
++
+     if (destBuffer.offset + destBuffer.size > destBase->getSize()) {
+         _hidl_cb(Status::ERROR_DRM_CANNOT_HANDLE, 0, "invalid buffer size");
+         return Void();
+-- 
+2.7.4
+

@@ -1,0 +1,41 @@
+From 14c1c6edbdc01035118c5370d36d30c51d819434 Mon Sep 17 00:00:00 2001
+From: Edwin Wong <edwinwong@google.com>
+Date: Tue, 26 Nov 2019 14:40:45 -0800
+Subject: [PATCH 1/2] [DO NOT MERGE] Fix heap buffer overflow for
+ releaseSecureStops.
+
+If the input SecureStopRelease size is less than sizeof(uint32_t)
+in releaseSecureStops(), an out of bound read will occur.
+
+bug: 144766455
+bug: 144746235
+bug: 147281068
+
+Test: sts
+ANDROID_BUILD_TOP= ./android-sts/tools/sts-tradefed run sts-engbuild-no-spl-lock -m StsHostTestCases --test android.security.sts.Poc19_11#testPocBug_144766455
+
+Change-Id: I050504c1ef4e5c41fb47ee97e98db41399288a91
+(cherry picked from commit 2587ab6c7642062ea1791de1868c28b1164a073c)
+---
+ drm/mediadrm/plugins/clearkey/hidl/DrmPlugin.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/drm/mediadrm/plugins/clearkey/hidl/DrmPlugin.cpp b/drm/mediadrm/plugins/clearkey/hidl/DrmPlugin.cpp
+index d51e29d..30f7459 100644
+--- a/drm/mediadrm/plugins/clearkey/hidl/DrmPlugin.cpp
++++ b/drm/mediadrm/plugins/clearkey/hidl/DrmPlugin.cpp
+@@ -531,6 +531,11 @@ Return<Status> DrmPlugin::releaseSecureStops(const SecureStopRelease& ssRelease)
+     //    count - number of secure stops
+     //    list of fixed length secure stops
+     size_t countBufferSize = sizeof(uint32_t);
++    if (input.size() < countBufferSize) {
++        // SafetyNet logging
++        android_errorWriteLog(0x534e4554, "144766455");
++        return Status::BAD_VALUE;
++    }
+     uint32_t count = 0;
+     sscanf(reinterpret_cast<char*>(input.data()), "%04" PRIu32, &count);
+ 
+-- 
+2.7.4
+

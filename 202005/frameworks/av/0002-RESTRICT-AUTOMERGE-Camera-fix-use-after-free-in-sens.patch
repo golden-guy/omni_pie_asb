@@ -1,0 +1,45 @@
+From f3547e3e771110dc3776138533977acf69f9061e Mon Sep 17 00:00:00 2001
+From: Yin-Chia Yeh <yinchiayeh@google.com>
+Date: Mon, 16 Mar 2020 11:49:30 -0700
+Subject: [PATCH 2/2] RESTRICT AUTOMERGE: Camera: fix use after free in sensor
+ timestamp
+
+The metadata object might be overriden later and has it memory
+re-allocated; hence snaping the sensor timestamp value before
+we call into any method that might change the metadata.
+
+Test: build
+Bug: 150944913
+Merged-In: I5b10b680e0cce96ca49e1772770adb4835545472
+Change-Id: I5b10b680e0cce96ca49e1772770adb4835545472
+(cherry picked from commit 1859a38c4d8f438eba9cb7b39be102747407fa36)
+---
+ services/camera/libcameraservice/device3/Camera3Device.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/services/camera/libcameraservice/device3/Camera3Device.cpp b/services/camera/libcameraservice/device3/Camera3Device.cpp
+index 8ca9d94..03f994c 100644
+--- a/services/camera/libcameraservice/device3/Camera3Device.cpp
++++ b/services/camera/libcameraservice/device3/Camera3Device.cpp
+@@ -3002,6 +3002,9 @@ void Camera3Device::sendCaptureResult(CameraMetadata &pendingMetadata,
+                 frameNumber);
+         return;
+     }
++
++    nsecs_t sensorTimestamp = timestamp.data.i64[0];
++
+     for (auto& physicalMetadata : captureResult.mPhysicalMetadatas) {
+         camera_metadata_entry timestamp =
+                 physicalMetadata.mPhysicalCameraMetadata.find(ANDROID_SENSOR_TIMESTAMP);
+@@ -3021,7 +3024,7 @@ void Camera3Device::sendCaptureResult(CameraMetadata &pendingMetadata,
+     }
+ 
+     mTagMonitor.monitorMetadata(TagMonitor::RESULT,
+-            frameNumber, timestamp.data.i64[0], captureResult.mMetadata);
++            frameNumber, sensorTimestamp, captureResult.mMetadata);
+ 
+     insertResultLocked(&captureResult, frameNumber);
+ }
+-- 
+2.7.4
+

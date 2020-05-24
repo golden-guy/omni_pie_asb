@@ -1,0 +1,37 @@
+From 23cd105687f1541939bf38ae03227607bba1b020 Mon Sep 17 00:00:00 2001
+From: Christopher Tate <ctate@google.com>
+Date: Tue, 25 Feb 2020 17:48:49 -0800
+Subject: [PATCH 7/7] Verify all possible hosts that match web nav
+
+Even if an <intent-filter> matches non-web schemes in addition to http
+or https, make sure to include its cited hosts in the autoVerify
+evaluation.
+
+Bug: 150038428
+Test: atest OsHostTests#testIntentFilterHostValidation
+Change-Id: If9ef0fc53d96e6581c56d86f89fe63bc9a5fb89a
+Merged-In: If9ef0fc53d96e6581c56d86f89fe63bc9a5fb89a
+(cherry picked from commit 1fba0f897f276d5d47962534867e764da8061105)
+(cherry picked from commit bfa779601082d9021ea4e7d4cca571575bd0b13b)
+---
+ services/core/java/com/android/server/pm/PackageManagerService.java | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/pm/PackageManagerService.java b/services/core/java/com/android/server/pm/PackageManagerService.java
+index 873f5ff..5b0e24e 100644
+--- a/services/core/java/com/android/server/pm/PackageManagerService.java
++++ b/services/core/java/com/android/server/pm/PackageManagerService.java
+@@ -17881,7 +17881,9 @@ public class PackageManagerService extends IPackageManager.Stub
+                 final int verificationId = mIntentFilterVerificationToken++;
+                 for (PackageParser.Activity a : pkg.activities) {
+                     for (ActivityIntentInfo filter : a.intents) {
+-                        if (filter.handlesWebUris(true) && needsNetworkVerificationLPr(filter)) {
++                        // Run verification against hosts mentioned in any web-nav intent filter,
++                        // even if the filter matches non-web schemes as well
++                        if (filter.handlesWebUris(false) && needsNetworkVerificationLPr(filter)) {
+                             if (DEBUG_DOMAIN_VERIFICATION) Slog.d(TAG,
+                                     "Verification needed for IntentFilter:" + filter.toString());
+                             mIntentFilterVerifier.addOneIntentFilterVerification(
+-- 
+2.7.4
+

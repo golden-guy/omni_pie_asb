@@ -1,0 +1,40 @@
+From 3fc385b11266a8a0dce61bd8ee2424699e1dc64e Mon Sep 17 00:00:00 2001
+From: Emilian Peev <epeev@google.com>
+Date: Tue, 18 Feb 2020 10:16:06 -0800
+Subject: [PATCH] Camera: Fix possible ExifUtils heap corruption
+
+Both EXIF_TAG_IMAGE_WIDTH and EXIF_TAG_IMAGE_LENGTH
+expect short values as per EXIF spec. Call appropriate
+libexif function to avoid possible heap corruption.
+
+Bug: 148223871
+Test: Successful build
+Change-Id: Ib16bf1ae8ab2093da529efe6ff0778331c3e9eb3
+(cherry picked from commit aa5673385a4aad41f6f4de961365cb741f6dc7a8)
+---
+ camera/common/1.0/default/Exif.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/camera/common/1.0/default/Exif.cpp b/camera/common/1.0/default/Exif.cpp
+index 6054999..b04c808 100644
+--- a/camera/common/1.0/default/Exif.cpp
++++ b/camera/common/1.0/default/Exif.cpp
+@@ -632,13 +632,13 @@ bool ExifUtilsImpl::setGpsTimestamp(const struct tm& t) {
+ }
+ 
+ bool ExifUtilsImpl::setImageHeight(uint32_t length) {
+-    SET_LONG(EXIF_IFD_0, EXIF_TAG_IMAGE_LENGTH, length);
++    SET_SHORT(EXIF_IFD_0, EXIF_TAG_IMAGE_LENGTH, length);
+     SET_LONG(EXIF_IFD_EXIF, EXIF_TAG_PIXEL_Y_DIMENSION, length);
+     return true;
+ }
+ 
+ bool ExifUtilsImpl::setImageWidth(uint32_t width) {
+-    SET_LONG(EXIF_IFD_0, EXIF_TAG_IMAGE_WIDTH, width);
++    SET_SHORT(EXIF_IFD_0, EXIF_TAG_IMAGE_WIDTH, width);
+     SET_LONG(EXIF_IFD_EXIF, EXIF_TAG_PIXEL_X_DIMENSION, width);
+     return true;
+ }
+-- 
+2.7.4
+

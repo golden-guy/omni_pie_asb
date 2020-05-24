@@ -1,0 +1,50 @@
+From 14fa6dcaf558d6df281c988c628520d4bcabd450 Mon Sep 17 00:00:00 2001
+From: Eugene Susla <eugenesusla@google.com>
+Date: Thu, 28 Mar 2019 13:50:17 -0700
+Subject: [PATCH 6/7] RESTRICT AUTOMERGE Prevent accessing companion records
+ from arbitrary uids
+
+Test: manual
+Fixes: 129476618
+Change-Id: I7b18cfcdf58e62a445cbb508116c6ce7c1cea8d7
+(cherry picked from commit 84cccfe6cdbc57ee372ee1a0fea64c7a11c53766)
+---
+ core/res/AndroidManifest.xml                                         | 5 +++++
+ .../com/android/server/companion/CompanionDeviceManagerService.java  | 5 +++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/core/res/AndroidManifest.xml b/core/res/AndroidManifest.xml
+index fe9e67b..15b424e 100644
+--- a/core/res/AndroidManifest.xml
++++ b/core/res/AndroidManifest.xml
+@@ -3149,6 +3149,11 @@
+     <permission android:name="android.permission.OBSERVE_GRANT_REVOKE_PERMISSIONS"
+         android:protectionLevel="signature|privileged" />
+ 
++    <!-- Allows an application to manage the companion devices.
++         @hide -->
++    <permission android:name="android.permission.MANAGE_COMPANION_DEVICES"
++                android:protectionLevel="signature" />
++
+     <!-- @SystemApi Allows an application to use SurfaceFlinger's low level features.
+          <p>Not for use by third-party applications.
+          @hide
+diff --git a/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java b/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java
+index d44fe4d..bf2b83b 100644
+--- a/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java
++++ b/services/companion/java/com/android/server/companion/CompanionDeviceManagerService.java
+@@ -629,6 +629,11 @@ public class CompanionDeviceManagerService extends SystemService implements Bind
+                 + "associate USER_ID PACKAGE MAC_ADDRESS\n"
+                 + "disassociate USER_ID PACKAGE MAC_ADDRESS";
+ 
++        ShellCmd() {
++            getContext().enforceCallingOrSelfPermission(
++                    android.Manifest.permission.MANAGE_COMPANION_DEVICES, "ShellCmd");
++        }
++
+         @Override
+         public int onCommand(String cmd) {
+             switch (cmd) {
+-- 
+2.7.4
+

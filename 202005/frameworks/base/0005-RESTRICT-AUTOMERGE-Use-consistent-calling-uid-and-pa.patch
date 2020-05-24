@@ -1,0 +1,140 @@
+From dfa51fdb87e3bc0b21b37f6d11ec2e8457423fce Mon Sep 17 00:00:00 2001
+From: Riddle Hsu <riddlehsu@google.com>
+Date: Tue, 3 Mar 2020 16:29:31 +0800
+Subject: [PATCH 5/7] RESTRICT AUTOMERGE Use consistent calling uid and package
+ in navigateUpTo
+
+Originally, if the caller of navigateUpTo is alive, even the calling
+uid is set to the caller who launched the existing destination activity,
+the uid from caller process has higher priority to replace the given
+calling uid. So this change doesn't modify the existing behavior if
+the caller process is valid. Besides, the case of delivering new intent
+uses the source record as calling identity too, so the case of starting
+new activity should be consistent.
+
+Also forbid attaching null application thread to avoid unexpected state
+in process record.
+
+Bug: 144285917
+Test: atest ActivityStackTests#testNavigateUpTo
+Test: atest CtsSecurityTestCases:ActivityManagerTest# \
+      testActivityManager_attachNullApplication
+Change-Id: I60732f430256d37cb926d08d093581f051c4afed
+(cherry picked from commit da78af4d6696dda77c692a7c6f2f49d4277cf341)
+---
+ .../com/android/server/am/ActivityManagerService.java     |  5 ++++-
+ .../core/java/com/android/server/am/ActivityStack.java    | 15 ++++++++++-----
+ .../src/com/android/server/am/ActivityStackTests.java     | 13 +++++++++++++
+ .../src/com/android/server/am/ActivityTestsBase.java      |  2 ++
+ 4 files changed, 29 insertions(+), 6 deletions(-)
+
+diff --git a/services/core/java/com/android/server/am/ActivityManagerService.java b/services/core/java/com/android/server/am/ActivityManagerService.java
+index a014ee3..63676cc 100644
+--- a/services/core/java/com/android/server/am/ActivityManagerService.java
++++ b/services/core/java/com/android/server/am/ActivityManagerService.java
+@@ -7604,7 +7604,7 @@ public class ActivityManagerService extends IActivityManager.Stub
+     }
+ 
+     @GuardedBy("this")
+-    private final boolean attachApplicationLocked(IApplicationThread thread,
++    private boolean attachApplicationLocked(@NonNull IApplicationThread thread,
+             int pid, int callingUid, long startSeq) {
+ 
+         // Find the application record that is being attached...  either via
+@@ -7985,6 +7985,9 @@ public class ActivityManagerService extends IActivityManager.Stub
+ 
+     @Override
+     public final void attachApplication(IApplicationThread thread, long startSeq) {
++        if (thread == null) {
++            throw new SecurityException("Invalid application interface");
++        }
+         synchronized (this) {
+             int callingPid = Binder.getCallingPid();
+             final int callingUid = Binder.getCallingUid();
+diff --git a/services/core/java/com/android/server/am/ActivityStack.java b/services/core/java/com/android/server/am/ActivityStack.java
+index 5f2a65a..dddcc9e 100644
+--- a/services/core/java/com/android/server/am/ActivityStack.java
++++ b/services/core/java/com/android/server/am/ActivityStack.java
+@@ -3945,6 +3945,11 @@ class ActivityStack<T extends StackWindowController> extends ConfigurationContai
+ 
+     final boolean navigateUpToLocked(ActivityRecord srec, Intent destIntent, int resultCode,
+             Intent resultData) {
++        if (srec.app == null || srec.app.thread == null) {
++            // Nothing to do if the caller is not attached, because this method should be called
++            // from an alive activity.
++            return false;
++        }
+         final TaskRecord task = srec.getTask();
+         final ArrayList<ActivityRecord> activities = task.mActivities;
+         final int start = activities.indexOf(srec);
+@@ -3996,14 +4001,14 @@ class ActivityStack<T extends StackWindowController> extends ConfigurationContai
+         }
+ 
+         if (parent != null && foundParentInTask) {
++            final int callingUid = srec.info.applicationInfo.uid;
+             final int parentLaunchMode = parent.info.launchMode;
+             final int destIntentFlags = destIntent.getFlags();
+             if (parentLaunchMode == ActivityInfo.LAUNCH_SINGLE_INSTANCE ||
+                     parentLaunchMode == ActivityInfo.LAUNCH_SINGLE_TASK ||
+                     parentLaunchMode == ActivityInfo.LAUNCH_SINGLE_TOP ||
+                     (destIntentFlags & Intent.FLAG_ACTIVITY_CLEAR_TOP) != 0) {
+-                parent.deliverNewIntentLocked(srec.info.applicationInfo.uid, destIntent,
+-                        srec.packageName);
++                parent.deliverNewIntentLocked(callingUid, destIntent, srec.packageName);
+             } else {
+                 try {
+                     ActivityInfo aInfo = AppGlobals.getPackageManager().getActivityInfo(
+@@ -4016,10 +4021,10 @@ class ActivityStack<T extends StackWindowController> extends ConfigurationContai
+                             .setActivityInfo(aInfo)
+                             .setResultTo(parent.appToken)
+                             .setCallingPid(-1)
+-                            .setCallingUid(parent.launchedFromUid)
+-                            .setCallingPackage(parent.launchedFromPackage)
++                            .setCallingUid(callingUid)
++                            .setCallingPackage(srec.packageName)
+                             .setRealCallingPid(-1)
+-                            .setRealCallingUid(parent.launchedFromUid)
++                            .setRealCallingUid(callingUid)
+                             .setComponentSpecified(true)
+                             .execute();
+                     foundParentInTask = res == ActivityManager.START_SUCCESS;
+diff --git a/services/tests/servicestests/src/com/android/server/am/ActivityStackTests.java b/services/tests/servicestests/src/com/android/server/am/ActivityStackTests.java
+index 01425ed..55ece4c 100644
+--- a/services/tests/servicestests/src/com/android/server/am/ActivityStackTests.java
++++ b/services/tests/servicestests/src/com/android/server/am/ActivityStackTests.java
+@@ -606,6 +606,19 @@ public class ActivityStackTests extends ActivityTestsBase {
+         assertTrue(listener.changed);
+     }
+ 
++    @Test
++    public void testNavigateUpTo() {
++        final ActivityRecord firstActivity = new ActivityBuilder(mService).setTask(mTask).build();
++        final ActivityRecord secondActivity = new ActivityBuilder(mService).setTask(mTask)
++                .setUid(firstActivity.getUid() + 1).build();
++        secondActivity.app.thread = null;
++        // This should do nothing from a non-attached caller (app.thread == null).
++        assertFalse(mStack.navigateUpToLocked(secondActivity /* source record */,
++                firstActivity.intent /* destIntent */, 0 /* resultCode */, null /* resultData */));
++        assertFalse(secondActivity.finishing);
++        assertFalse(firstActivity.finishing);
++    }
++
+     private void verifyShouldSleepActivities(boolean focusedStack,
+             boolean keyguardGoingAway, boolean displaySleeping, boolean expected) {
+         mSupervisor.mFocusedStack = focusedStack ? mStack : null;
+diff --git a/services/tests/servicestests/src/com/android/server/am/ActivityTestsBase.java b/services/tests/servicestests/src/com/android/server/am/ActivityTestsBase.java
+index 1cd111f..6467dbd 100644
+--- a/services/tests/servicestests/src/com/android/server/am/ActivityTestsBase.java
++++ b/services/tests/servicestests/src/com/android/server/am/ActivityTestsBase.java
+@@ -192,6 +192,8 @@ public class ActivityTestsBase {
+             aInfo.applicationInfo = new ApplicationInfo();
+             aInfo.applicationInfo.packageName = mComponent.getPackageName();
+             aInfo.applicationInfo.uid = mUid;
++            aInfo.packageName = mComponent.getPackageName();
++            aInfo.name = mComponent.getClassName();
+             aInfo.flags |= mActivityFlags;
+ 
+             final ActivityRecord activity = new ActivityRecord(mService, null /* caller */,
+-- 
+2.7.4
+

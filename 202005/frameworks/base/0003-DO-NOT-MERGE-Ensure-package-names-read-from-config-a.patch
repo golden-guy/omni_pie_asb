@@ -1,0 +1,53 @@
+From e3f9dc4323284ff7c527c87040363c9a287a4540 Mon Sep 17 00:00:00 2001
+From: Hai Zhang <zhanghai@google.com>
+Date: Tue, 10 Dec 2019 17:34:18 -0800
+Subject: [PATCH 3/7] DO NOT MERGE Ensure package names read from config are
+ system packages.
+
+Bug: 145981139
+Test: manually tested ensureSystemPackageName() returns null for non-system app
+Change-Id: I1d23910cbd282f6702785c9dfb059d7be6b0e895
+(cherry picked from commit 6a56247200e1a8afc4dacc2497ec384efa200b92)
+(cherry picked from commit 584d73a0b066e01b0877b475c8e2b1a85fcf5328)
+---
+ .../android/server/pm/PackageManagerService.java   | 24 +++++++++++++++++++++-
+ 1 file changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/services/core/java/com/android/server/pm/PackageManagerService.java b/services/core/java/com/android/server/pm/PackageManagerService.java
+index 06c92e2..873f5ff 100644
+--- a/services/core/java/com/android/server/pm/PackageManagerService.java
++++ b/services/core/java/com/android/server/pm/PackageManagerService.java
+@@ -20820,7 +20820,29 @@ Slog.v(TAG, ":: stepped forward, applying functor at tag " + parser.getName());
+ 
+     @Override
+     public String getSystemTextClassifierPackageName() {
+-        return mContext.getString(R.string.config_defaultTextClassifierPackage);
++        return ensureSystemPackageName(mContext.getString(
++                R.string.config_defaultTextClassifierPackage));
++    }
++
++    @Nullable
++    private String ensureSystemPackageName(@Nullable String packageName) {
++        if (packageName == null) {
++            return null;
++        }
++        long token = Binder.clearCallingIdentity();
++        try {
++            if (getPackageInfo(packageName, MATCH_FACTORY_ONLY, UserHandle.USER_SYSTEM) == null) {
++                PackageInfo packageInfo = getPackageInfo(packageName, 0, UserHandle.USER_SYSTEM);
++                if (packageInfo != null) {
++                    EventLog.writeEvent(0x534e4554, "145981139", packageInfo.applicationInfo.uid,
++                            "");
++                }
++                return null;
++            }
++        } finally {
++            Binder.restoreCallingIdentity(token);
++        }
++        return packageName;
+     }
+ 
+     @Override
+-- 
+2.7.4
+

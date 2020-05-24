@@ -1,0 +1,58 @@
+From 17fcd4968599cdb37876e96c86f5fe2654d58749 Mon Sep 17 00:00:00 2001
+From: Janis Danisevskis <jdanis@google.com>
+Date: Tue, 21 Jan 2020 14:33:30 -0800
+Subject: [PATCH] Add permission check on onKeyguardVisibilityChanged
+
+Without this permission check any app can toggle the locked state of
+keymaster once it has been unlocked for the first time.
+
+Bug: 144285084
+Test: Manually tested with debugger that the requred code paths are
+      run.
+
+Change-Id: Idb8a200dc2963e1085e9fddd0c565c5172465e65
+Merged-In: Idb8a200dc2963e1085e9fddd0c565c5172465e65
+(cherry picked from commit 21f452c3722ad7fa39c7d84c4723bcbb723ab164)
+(cherry picked from commit 3cac4c660ad0392c34f0c688bfc188a10d4f28d3)
+---
+ keystore/key_store_service.cpp | 21 +++++++++++++++------
+ 1 file changed, 15 insertions(+), 6 deletions(-)
+
+diff --git a/keystore/key_store_service.cpp b/keystore/key_store_service.cpp
+index 400c814..999da59 100644
+--- a/keystore/key_store_service.cpp
++++ b/keystore/key_store_service.cpp
+@@ -2353,15 +2353,24 @@ KeyStoreServiceReturnCode KeyStoreService::upgradeKeyBlob(const String16& name,
+ }
+ 
+ Status KeyStoreService::onKeyguardVisibilityChanged(bool isShowing, int32_t userId,
+-                                                    int32_t* aidl_return) {
++                                                    int32_t* _aidl_return) {
+     KEYSTORE_SERVICE_LOCK;
+-    enforcement_policy.set_device_locked(isShowing, userId);
+-    if (!isShowing) {
++    if (isShowing) {
++        if (!checkBinderPermission(P_LOCK, UID_SELF)) {
++            LOG(WARNING) << "onKeyguardVisibilityChanged called with isShowing == true but "
++                            "without LOCK permission";
++            return AIDL_RETURN(ResponseCode::PERMISSION_DENIED);
++        }
++    } else {
++        if (!checkBinderPermission(P_UNLOCK, UID_SELF)) {
++            LOG(WARNING) << "onKeyguardVisibilityChanged called with isShowing == false but "
++                            "without UNLOCK permission";
++            return AIDL_RETURN(ResponseCode::PERMISSION_DENIED);
++        }
+         mActiveUserId = userId;
+     }
+-    *aidl_return = static_cast<int32_t>(ResponseCode::NO_ERROR);
+-
+-    return Status::ok();
++    enforcement_policy.set_device_locked(isShowing, userId);
++    return AIDL_RETURN(ResponseCode::NO_ERROR);
+ }
+ 
+ }  // namespace keystore
+-- 
+2.7.4
+

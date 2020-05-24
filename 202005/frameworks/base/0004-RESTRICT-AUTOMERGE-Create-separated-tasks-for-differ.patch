@@ -1,0 +1,78 @@
+From 3c84d2b1a9be70150ba92c09515a5233f0bc438a Mon Sep 17 00:00:00 2001
+From: Riddle Hsu <riddlehsu@google.com>
+Date: Wed, 19 Feb 2020 15:13:56 +0800
+Subject: [PATCH 4/7] RESTRICT AUTOMERGE Create separated tasks for different
+ apps from startActivities
+
+Assume there are 2 applications A, B with different uids.
+There are 4 activities A1, A2, B1, B2 with default task
+affinity and launch mode.
+
+After A1 called startActivities(B1, A2, B2):
+ Original   : Task(A1, B1, A2, B2)
+ This Change: Task(A1, B1), Task(A2, B2)
+In other words, the source caller cannot launch its activity
+above the activity of other application in the same task, and
+it can still launch activity of other application in its task.
+
+Bug: 145669109
+Test: atest StartActivityTests# \
+      testStartActivitiesWithDiffUidNotInSameTask
+Change-Id: I97bd875146a52f62b8fe82235487ccefb2955e8e
+(cherry picked from commit 48d8d370f3d1dac06719ca6a52bda5f45a1a533a)
+---
+ .../android/server/am/ActivityStartController.java  | 21 ++++++++++++++++++---
+ 1 file changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/services/core/java/com/android/server/am/ActivityStartController.java b/services/core/java/com/android/server/am/ActivityStartController.java
+index c926503..240f01d 100644
+--- a/services/core/java/com/android/server/am/ActivityStartController.java
++++ b/services/core/java/com/android/server/am/ActivityStartController.java
+@@ -334,6 +334,9 @@ public class ActivityStartController {
+         } else {
+             callingPid = callingUid = -1;
+         }
++        boolean forceNewTask = false;
++        final int filterCallingUid = ActivityStarter.computeResolveFilterUid(
++                callingUid, realCallingUid, UserHandle.USER_NULL);
+         final long origId = Binder.clearCallingIdentity();
+         try {
+             synchronized (mService) {
+@@ -353,11 +356,13 @@ public class ActivityStartController {
+ 
+                     // Don't modify the client's object!
+                     intent = new Intent(intent);
++                    if (forceNewTask) {
++                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++                    }
+ 
+                     // Collect information about the target of the Intent.
+                     ActivityInfo aInfo = mSupervisor.resolveActivity(intent, resolvedTypes[i], 0,
+-                            null, userId, ActivityStarter.computeResolveFilterUid(
+-                                    callingUid, realCallingUid, UserHandle.USER_NULL));
++                            null, userId, filterCallingUid);
+                     // TODO: New, check if this is correct
+                     aInfo = mService.getActivityInfoForUser(aInfo, userId);
+ 
+@@ -397,7 +402,17 @@ public class ActivityStartController {
+                         return res;
+                     }
+ 
+-                    resultTo = outActivity[0] != null ? outActivity[0].appToken : null;
++                    final ActivityRecord started = outActivity[0];
++                    if (started != null && started.getUid() == filterCallingUid) {
++                        // Only the started activity which has the same uid as the source caller can
++                        // be the caller of next activity.
++                        resultTo = started.appToken;
++                        forceNewTask = false;
++                    } else {
++                        // Different apps not adjacent to the caller are forced to be new task.
++                        resultTo = null;
++                        forceNewTask = true;
++                    }
+                 }
+             }
+         } finally {
+-- 
+2.7.4
+
